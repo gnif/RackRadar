@@ -6,7 +6,8 @@
 int main(int argc, char *argv)
 {
   rr_log_init();
-  rr_config_init();
+  if (!rr_config_init())
+    LOG_WARN("Failed to load config, using defaults");
 
   return EXIT_SUCCESS;
 }

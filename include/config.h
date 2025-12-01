@@ -1,3 +1,5 @@
+#include <stdbool.h>
+
 #define SETTINGS \
   SETTING_STR(database.host, "127.0.0.1") \
   SETTING_INT(database.port, 3306       ) \
@@ -19,4 +21,4 @@ Config;
 
 extern Config g_config;
 
-int rr_config_init(void);
+bool rr_config_init(void);
