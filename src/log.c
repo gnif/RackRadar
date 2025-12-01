@@ -20,9 +20,9 @@ static const char ** log_lookup = NULL;
 static uint64_t startTime;
 static bool     traceEnabled = false;
 
-void log_init(void)
+void rr_log_init(void)
 {
-  startTime = microtime();
+  startTime = rr_microtime();
   static const char * colorLookup[] =
   {
     COLOR_RESET        , // DEBUG_LEVEL_NONE
@@ -48,12 +48,12 @@ void log_init(void)
   log_lookup = (isatty(STDERR_FILENO) == 1) ? colorLookup : plainLookup;
 }
 
-void log_enableTracing(void)
+void rr_log_enableTracing(void)
 {
   traceEnabled = true;
 }
 
-inline static void log_levelVA(enum DebugLevel level, const char * file,
+inline static void rr_log_levelVA(enum DebugLevel level, const char * file,
     unsigned int line, const char * function, const char * format, va_list va)
 {
   if (level == LOG_LEVEL_TRACE && !traceEnabled)
@@ -65,7 +65,7 @@ inline static void log_levelVA(enum DebugLevel level, const char * file,
   else
     ++f;
 
-  uint64_t elapsed = microtime() - startTime;
+  uint64_t elapsed = rr_microtime() - startTime;
   uint64_t sec     = elapsed / 1000000UL;
   uint64_t us      = elapsed % 1000000UL;
 
@@ -82,47 +82,47 @@ inline static void log_levelVA(enum DebugLevel level, const char * file,
   fprintf(stderr, "%s\n", log_lookup[LOG_LEVEL_NONE]);
 }
 
-void log_level(enum DebugLevel level, const char * file, unsigned int line,
+void rr_log_level(enum DebugLevel level, const char * file, unsigned int line,
     const char * function, const char * format, ...)
 {
   va_list va;
   va_start(va, format);
-  log_levelVA(level, file, line, function, format, va);
+  rr_log_levelVA(level, file, line, function, format, va);
   va_end(va);
 }
 
-void log_info(const char * file, unsigned int line, const char * function,
+void rr_log_info(const char * file, unsigned int line, const char * function,
     const char * format, ...)
 {
   va_list va;
   va_start(va, format);
-  log_levelVA(LOG_LEVEL_INFO, file, line, function, format, va);
+  rr_log_levelVA(LOG_LEVEL_INFO, file, line, function, format, va);
   va_end(va);
 }
 
-void log_warn(const char * file, unsigned int line, const char * function,
+void rr_log_warn(const char * file, unsigned int line, const char * function,
     const char * format, ...)
 {
   va_list va;
   va_start(va, format);
-  log_levelVA(LOG_LEVEL_WARN, file, line, function, format, va);
+  rr_log_levelVA(LOG_LEVEL_WARN, file, line, function, format, va);
   va_end(va);
 }
 
-void log_error(const char * file, unsigned int line, const char * function,
+void rr_log_error(const char * file, unsigned int line, const char * function,
     const char * format, ...)
 {
   va_list va;
   va_start(va, format);
-  log_levelVA(LOG_LEVEL_ERROR, file, line, function, format, va);
+  rr_log_levelVA(LOG_LEVEL_ERROR, file, line, function, format, va);
   va_end(va);
 }
 
-void log_trace(const char * file, unsigned int line, const char * function,
+void rr_log_trace(const char * file, unsigned int line, const char * function,
     const char * format, ...)
 {
   va_list va;
   va_start(va, format);
-  log_levelVA(LOG_LEVEL_INFO, file, line, function, format, va);
+  rr_log_levelVA(LOG_LEVEL_INFO, file, line, function, format, va);
   va_end(va);
 }

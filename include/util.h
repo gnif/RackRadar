@@ -4,7 +4,9 @@
 #include <time.h>
 #include <stdint.h>
 
-static inline uint64_t microtime(void)
+#define ARRAY_SIZE(x) (sizeof((x)) / sizeof(*(x)))
+
+static inline uint64_t rr_microtime(void)
 {
   struct timespec time;
   clock_gettime(CLOCK_MONOTONIC, &time);

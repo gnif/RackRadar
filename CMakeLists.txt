@@ -6,6 +6,7 @@ find_package(libconfig REQUIRED)
 add_executable(RackRadar
   src/main.c
   src/log.c
+  src/config.c
 )
 
 include_directories(RackRadar PRIVATE

@@ -21,8 +21,8 @@ enum DebugLevel
   LOG_LEVEL_FATAL
 };
 
-void log_init(void);
-void log_enableTracing(void);
+void rr_log_init(void);
+void rr_log_enableTracing(void);
 
 // platform specific debug initialization
 void platform_debugInit(void);
@@ -48,20 +48,20 @@ void printBacktrace(void);
   #define LOG_UNREACHABLE_MARKER()
 #endif
 
-void log_level(enum DebugLevel level, const char * file, unsigned int line,
+void rr_log_level(enum DebugLevel level, const char * file, unsigned int line,
     const char * function, const char * format, ...)
   __attribute__((format (printf, 5, 6)));
 
-void log_info(const char * file, unsigned int line, const char * function,
+void rr_log_info(const char * file, unsigned int line, const char * function,
     const char * format, ...) __attribute__((format (printf, 4, 5)));
 
-void log_warn(const char * file, unsigned int line, const char * function,
+void rr_log_warn(const char * file, unsigned int line, const char * function,
     const char * format, ...) __attribute__((format (printf, 4, 5)));
 
-void log_error(const char * file, unsigned int line, const char * function,
+void rr_log_error(const char * file, unsigned int line, const char * function,
     const char * format, ...) __attribute__((format (printf, 4, 5)));
 
-void log_trace(const char * file, unsigned int line, const char * function,
+void rr_log_trace(const char * file, unsigned int line, const char * function,
     const char * format, ...) __attribute__((format (printf, 4, 5)));
 
 #define STRIPPATH(s) ( \
@@ -87,7 +87,7 @@ void log_trace(const char * file, unsigned int line, const char * function,
   sizeof(s) > 21 && (s)[sizeof(s)-22] == DIRECTORY_SEPARATOR ? (s) + sizeof(s) - 21 : (s))
 
 #define LOG_PRINT(level, fmt, ...) do { \
-  log_level(level, STRIPPATH(__FILE__), __LINE__, __FUNCTION__, \
+  rr_log_level(level, STRIPPATH(__FILE__), __LINE__, __FUNCTION__, \
       fmt, ##__VA_ARGS__); \
 } while (0)
 
