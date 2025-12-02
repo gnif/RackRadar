@@ -1,5 +1,6 @@
 #include "config.h"
 #include "util.h"
+#include "log.h"
 
 #include <libconfig.h>
 
@@ -29,16 +30,22 @@ ConfigDef;
   { .type = CFG_TYPE_INT, .ptr = &g_config.configField, .path = #configField },
 
 static ConfigDef configDef[] = { SETTINGS };
+static config_t s_config = { 0 };
 
 #undef SETTING_STR
 #undef SETTING_INT
 
 bool rr_config_init(void)
 {
-  config_t config;
-  config_init(&config);
-  if (config_read_file(&config, "settings.cfg") != CONFIG_TRUE)
+  config_init(&s_config);
+  if (config_read_file(&s_config, "settings.cfg") != CONFIG_TRUE)
+  {
+    LOG_ERROR("%s %s:%d",
+      config_error_text(&s_config),
+      config_error_file(&s_config),
+      config_error_line(&s_config));
     return false;
+  }
 
   for(int i = 0; i < ARRAY_SIZE(configDef); ++i)
   {
@@ -46,15 +53,19 @@ bool rr_config_init(void)
     switch(def->type)
     {
       case CFG_TYPE_STR:
-        config_lookup_string(&config, def->path, def->ptr);
+        config_lookup_string(&s_config, def->path, def->ptr);
         break;
 
       case CFG_TYPE_INT:
-        config_lookup_int(&config, def->path, def->ptr);
+        config_lookup_int(&s_config, def->path, def->ptr);
         break;
     }
   }
 
-  config_destroy(&config);
   return true;
+}
+
+void rr_config_deinit(void)
+{
+  config_destroy(&s_config);
 }

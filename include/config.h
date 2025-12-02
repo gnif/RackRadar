@@ -27,5 +27,6 @@ Config;
 extern Config g_config;
 
 bool rr_config_init(void);
+void rr_config_deinit(void);
 
 #endif
