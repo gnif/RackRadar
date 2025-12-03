@@ -1,9 +1,12 @@
 #include <stdlib.h>
+#include <assert.h>
 
 #include "log.h"
 #include "config.h"
 #include "db.h"
 #include "rpsl.h"
+#include "download.h"
+
 
 int main(int argc, char *argv)
 {
@@ -17,10 +20,61 @@ int main(int argc, char *argv)
     return EXIT_FAILURE;
   }
 
-  //rr_rpsl_import_gz("APNIC", "/home/geoff/Projects/RPSLStrip/build/apnic.RPSL.db.gz");
-  //rr_rpsl_import_gz("RIPE" , "/home/geoff/Projects/RPSLStrip/build/ripe.db.gz");
-  //rr_rpsl_import_gz("ARIN" , "/home/geoff/Projects/ARINtoRPSL/arin.db.gz");
+  RRDownload *dl = NULL;
+  if (!rr_download_init(&dl))
+  {
+    LOG_ERROR("rr_download_init failed");
+    return EXIT_FAILURE;
+  }
 
+  for(unsigned i = 0; i < g_config.nbSources; ++i)
+  {
+    typeof(*g_config.sources) *src = &g_config.sources[i];
+    const char * filename;
+    switch(src->type)
+    {
+      case SOURCE_TYPE_INVALID:
+        continue;
+
+      case SOURCE_TYPE_RPSL:
+        filename = "/tmp/rr.db.gz";
+        break;
+      
+      case SOURCE_TYPE_ARIN:
+        filename = "/tmp/arin.zip";
+        break;
+    };
+
+    LOG_INFO("Fetching source: %s", src->name);
+    if (src->user && src->pass)
+      rr_download_set_auth(dl, src->user, src->pass);
+    else
+      rr_download_clear_auth(dl);
+
+    FILE *fp;
+    if (!rr_download_to_tmpfile(dl, src->url, &fp))
+    {
+      LOG_ERROR("failed fetch for %s", src->name);
+      continue;
+    }
+
+    switch(src->type)
+    {
+      case SOURCE_TYPE_RPSL:
+        rr_rpsl_import_gz_FILE(src->name, fp);
+        break;
+
+      case SOURCE_TYPE_ARIN:
+        break;
+
+      default:
+        assert(false);
+    }
+
+    fclose(fp);
+  }
+
+  rr_download_deinit(&dl);
   rr_db_deinit();
   rr_config_deinit();
   return EXIT_SUCCESS;
