@@ -433,9 +433,9 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
   }
 }
 
-bool rr_rpsl_import_gz(const char *registrar, const char *filename)
+static bool rr_rpsl_import_gzFILE(const char * registrar, gzFile gz)
 {
-  LOG_INFO("start import %s from %s", registrar, filename);
+  LOG_INFO("start import %s", registrar);
   bool ret = false;
 
   struct ProcessState state =
@@ -445,7 +445,6 @@ bool rr_rpsl_import_gz(const char *registrar, const char *filename)
     .recordType = RECORD_TYPE_IGNORE
   };
 
-  gzFile gz = gzopen(filename, "rb");
   if (!gz)
   {
     LOG_ERROR("gzopen failed");
@@ -457,7 +456,7 @@ bool rr_rpsl_import_gz(const char *registrar, const char *filename)
   if (!buf)
   {
     LOG_ERROR("out of memory");
-    goto err_malloc;
+    goto err_gzopen;
   }
 
   uint8_t *ptr    = buf;
@@ -553,9 +552,58 @@ err_realloc:
   rr_db_putCon(&con);
 err_db_getCon:
   free(buf);
-err_malloc:
-  gzclose(gz);
 err_gzopen:
   LOG_INFO(ret ? "success" : "failure");
+  return ret;
+}
+
+bool rr_rpsl_import_gz_FILE(const char *registrar, FILE *fp)
+{
+  int fd = fileno(fp);
+  if (fd < 0)
+  {
+    LOG_ERROR("failed to get the fileno from the fp");
+    return false;
+  }
+
+  //dup so gzclose wont close the provided one
+  int fd2 = dup(fd);
+  if (fd2 < 0)
+  {
+    LOG_ERROR("failed to dup the filehandle");
+    return false;
+  }
+
+  if (lseek(fd2, 0, SEEK_SET) != 0)
+  {
+    close(fd2);
+    LOG_ERROR("failed to seek to the start of the file");
+    return false;
+  }
+  
+  gzFile gz = gzdopen(fd2, "rb");
+  if (!gz)
+  {
+    close(fd2);
+    LOG_ERROR("gzdopen failed");
+    return false;
+  }
+
+  bool ret = rr_rpsl_import_gzFILE(registrar, gz);
+  gzclose(gz);
+  return ret;
+}
+
+bool rr_rpsl_import_gz(const char *registrar, const char *filename)
+{
+  gzFile gz = gzopen(filename, "rb");
+  if (!gz)
+  {
+    LOG_ERROR("gzopen failed");
+    return false;
+  }
+
+  bool ret = rr_rpsl_import_gzFILE(registrar, gz);
+  gzclose(gz);
   return ret;
 }
