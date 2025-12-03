@@ -21,6 +21,24 @@ typedef struct Config
     const char *name;
   }
   database;
+
+  struct
+  {
+    const char *name;
+    enum
+    {
+      SOURCE_TYPE_INVALID,
+      SOURCE_TYPE_RPSL,
+      SOURCE_TYPE_ARIN
+    }
+    type;
+    unsigned frequency;
+    const char *url;
+    const char *user;
+    const char *pass;
+  }
+  *sources;
+  unsigned nbSources;
 }
 Config;
 
