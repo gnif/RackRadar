@@ -19,6 +19,7 @@ struct RRDBCon
 
 struct RRDBStmt
 {
+  MYSQL         *con;
   MYSQL_STMT    *stmt;
   MYSQL_BIND    *bind;
   unsigned long *lengths;
@@ -169,7 +170,8 @@ static RRDBStmt *rr_db_query_stmt(MYSQL *con, const char *sql, ...)
     return NULL;
   }
 
-  rs->stmt = stmt;
+  rs->con     = con;
+  rs->stmt    = stmt;
   rs->nparams = nparams;
 
   if (nparams == 0)
@@ -244,7 +246,7 @@ static RRDBStmt *rr_db_query_stmt(MYSQL *con, const char *sql, ...)
   return rs;
 }
 
-bool rr_db_execute_stmt(RRDBStmt *stmt)
+bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
 {
   for(int i = 0; i < stmt->nparams; ++i)
     if (rr_db_is_stringish(stmt->bind[i].buffer_type))
@@ -259,9 +261,12 @@ bool rr_db_execute_stmt(RRDBStmt *stmt)
     LOG_ERROR("execute failed: %s", mysql_stmt_error(stmt->stmt));
     return false;
   }
+
+  if (affectedRows)
+    *affectedRows = mysql_affected_rows(stmt->con);
+
   return true;
 }
-
 
 bool rr_db_stmt_bind_results(RRDBStmt *s, ...)
 {
@@ -359,7 +364,7 @@ void rr_db_stmt_free(RRDBStmt **rs)
   *rs = NULL;
 }
 
-unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial)
+unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial, unsigned *last_import)
 {
   RRDBStmt *st = NULL;
   unsigned ret = 0;
@@ -375,12 +380,12 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
       goto err;
     }
 
-    if (!rr_db_execute_stmt(st))
+    if (!rr_db_execute_stmt(st, NULL))
       goto err;
   }
 
   if (!(st = rr_db_query_stmt(con->con,
-    "SELECT id, serial FROM registrar WHERE name = ?",
+    "SELECT id, serial, last_import FROM registrar WHERE name = ?",
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = (char *)name  },
     NULL)))
   {
@@ -389,15 +394,16 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
   }
 
   if (!rr_db_stmt_bind_results(st,
-    MYSQL_TYPE_LONG, &ret  , 0,
-    MYSQL_TYPE_LONG, serial, 0,
+    MYSQL_TYPE_LONG, &ret       , 0,
+    MYSQL_TYPE_LONG, serial     , 0,
+    MYSQL_TYPE_LONG, last_import, 0,
     MYSQL_TYPE_NULL))
   {
     LOG_ERROR("bind results failed");
     goto err;
   }
 
-  if (!rr_db_execute_stmt(st))
+  if (!rr_db_execute_stmt(st, NULL))
     goto err;
 
   if (mysql_stmt_store_result(st->stmt) != 0)
@@ -546,18 +552,18 @@ bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
   return true;
 }
 
-bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial)
+bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats)
 {
   RRDBStmt *st;
 
-  // update the registrar serial
+  // update the registrar serial & import timestamp
   st = rr_db_query_stmt(con->con,
-    "UPDATE registrar SET serial = ? WHERE id = ?",
+    "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, NULL))
   {
     rr_db_stmt_free(&st);
     return false;
@@ -571,7 +577,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv4))
   {
     rr_db_stmt_free(&st);
     return false;
@@ -584,7 +590,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv6))
   {
     rr_db_stmt_free(&st);
     return false;
@@ -597,7 +603,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, &stats->deletedOrgs))
   {
     rr_db_stmt_free(&st);
     return false;
@@ -613,7 +619,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     "SET nb.org_id = o.id",
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, NULL))
   {
     rr_db_stmt_free(&st);
     return false;
@@ -628,12 +634,23 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     "SET nb.org_id = o.id",
     NULL);
 
-  if (!st || !rr_db_execute_stmt(st))
+  if (!st || !rr_db_execute_stmt(st, NULL))
   {
     rr_db_stmt_free(&st);
     return false;
   }
-  rr_db_stmt_free(&st);
+  rr_db_stmt_free(&st);    
+
+  LOG_INFO("Import Statistics");
+  LOG_INFO("Organizations:");
+  LOG_INFO("  New    : %llu", stats->newOrgs    );
+  LOG_INFO("  Deleted: %llu", stats->deletedOrgs);
+  LOG_INFO("IPv4:");
+  LOG_INFO("  New    : %llu", stats->newIPv4    );
+  LOG_INFO("  Deleted: %llu", stats->deletedIPv4);
+  LOG_INFO("IPv6:");
+  LOG_INFO("  New    : %llu", stats->newIPv6    );
+  LOG_INFO("  Deleted: %llu", stats->deletedIPv6);
 
   return true;
 };

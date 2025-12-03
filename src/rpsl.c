@@ -31,10 +31,10 @@ struct ProcessState
   RRDBStmt *stmtNetBlockV4;
   RRDBStmt *stmtNetBlockV6;
 
-  unsigned numIngore;
-  unsigned numOrg;
-  unsigned numInetnum;
-  unsigned numInet6num;
+  unsigned long long numIngore;
+  unsigned long long numOrg;
+  unsigned long long numInetnum;
+  unsigned long long numInet6num;
 
   union
   {
@@ -43,6 +43,8 @@ struct ProcessState
     RRDBNetBlockV6 inet6num;
   }
   x;
+
+  RRDBStatistics stats;
 };
 
 #include <unicode/ucsdet.h>
@@ -213,6 +215,8 @@ err:
 
 static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
 {
+  unsigned long long ra;
+
   if (len == 0)
   {
     // end of record found
@@ -228,7 +232,11 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           ++state->numOrg;
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
-          rr_db_execute_stmt(state->stmtOrg);
+          rr_db_execute_stmt(state->stmtOrg, &ra);
+          if (ra == 1)
+            ++state->stats.newOrgs;
+
+          ++state->numOrg;
           break;
 
         case RECORD_TYPE_INETNUM:
@@ -248,7 +256,11 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             state->x.inetnum.endAddr);
 
           sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
-          rr_db_execute_stmt(state->stmtNetBlockV4);
+          rr_db_execute_stmt(state->stmtNetBlockV4, &ra);
+          if (ra == 1)
+            ++state->stats.newIPv4;
+
+          ++state->numInetnum;
           break;
 
         case RECORD_TYPE_INET6NUM:
@@ -266,7 +278,10 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             &state->x.inet6num.endAddr);
 
           sanatize(state->x.inet6num.descr, sizeof(state->x.inet6num.descr));
-          rr_db_execute_stmt(state->stmtNetBlockV6);
+          rr_db_execute_stmt(state->stmtNetBlockV6, &ra);
+          if (ra == 1)
+            ++state->stats.newIPv6;
+
           ++state->numInet6num;
           break;
       }
@@ -433,9 +448,11 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
   }
 }
 
-static bool rr_rpsl_import_gzFILE(const char * registrar, gzFile gz)
+static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
+  RRDBCon *con, unsigned registar_id, unsigned new_serial)
 {
   LOG_INFO("start import %s", registrar);
+  uint64_t startTime = rr_microtime();
   bool ret = false;
 
   struct ProcessState state =
@@ -459,17 +476,10 @@ static bool rr_rpsl_import_gzFILE(const char * registrar, gzFile gz)
     goto err_gzopen;
   }
 
-  uint8_t *ptr    = buf;
-  uint8_t *line   = buf;
-  unsigned lineNo = 0;
+  uint8_t *ptr  = buf;
+  uint8_t *line = buf;
+  unsigned long long lineNo = 0;
   int n;
-
-  RRDBCon *con;
-  if (!rr_db_getCon(&con))
-  {
-    LOG_ERROR("out of connections");
-    goto err_db_getCon;
-  }
 
   if (!rr_db_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
   {
@@ -490,7 +500,8 @@ static bool rr_rpsl_import_gzFILE(const char * registrar, gzFile gz)
   }
 
   rr_db_start(con);
-  state.registrar_id = rr_db_get_registrar_id(con, registrar, true, &state.serial);
+  unsigned last_import;
+  state.registrar_id = rr_db_get_registrar_id(con, registrar, true, &state.serial, &last_import);
   ++state.serial;
   
   while((n = gzread(gz, ptr, buf + bufSize - ptr)) > 0)
@@ -538,7 +549,7 @@ static bool rr_rpsl_import_gzFILE(const char * registrar, gzFile gz)
 
   rr_rpsl_process_line("", 0, &state);
 
-  ret = rr_db_finalize_registrar(con, state.registrar_id, state.serial);
+  ret = rr_db_finalize_registrar(con, state.registrar_id, state.serial, &state.stats);
 
 err_realloc:
   rr_db_stmt_free(&state.stmtOrg);
@@ -546,18 +557,35 @@ err_realloc:
   rr_db_stmt_free(&state.stmtNetBlockV6);
 
   if (ret)
+  {
     rr_db_commit(con);
+    uint64_t elapsed = rr_microtime() - startTime;
+    uint64_t sec     = elapsed / 1000000UL;
+    uint64_t us      = elapsed % 1000000UL;
+
+    LOG_INFO("RPSL Statistics");
+    LOG_INFO("  Total Lines: %llu", lineNo           );
+    LOG_INFO("  Orgs       : %llu", state.numOrg     );
+    LOG_INFO("  Inetnum    : %llu", state.numInetnum );
+    LOG_INFO("  Inet6num   : %llu", state.numInet6num);
+    LOG_INFO("  Ignored    : %llu", state.numIngore  );
+    LOG_INFO("  Elapsed    : %02u:%02u:%02u.%03u",
+        (unsigned)(sec / 60 / 60),
+        (unsigned)(sec / 60 % 60),
+        (unsigned)(sec % 60),
+        (unsigned)(us / 1000));
+  }
   else
     rr_db_rollback(con);
   rr_db_putCon(&con);
-err_db_getCon:
   free(buf);
 err_gzopen:
   LOG_INFO(ret ? "success" : "failure");
   return ret;
 }
 
-bool rr_rpsl_import_gz_FILE(const char *registrar, FILE *fp)
+bool rr_rpsl_import_gz_FILE(const char *registrar, FILE *fp,
+  RRDBCon *con, unsigned registrar_id, unsigned new_serial)
 {
   int fd = fileno(fp);
   if (fd < 0)
@@ -589,12 +617,13 @@ bool rr_rpsl_import_gz_FILE(const char *registrar, FILE *fp)
     return false;
   }
 
-  bool ret = rr_rpsl_import_gzFILE(registrar, gz);
+  bool ret = rr_rpsl_import_gzFILE(registrar, gz, con, registrar_id, new_serial);
   gzclose(gz);
   return ret;
 }
 
-bool rr_rpsl_import_gz(const char *registrar, const char *filename)
+bool rr_rpsl_import_gz(const char *registrar, const char *filename,
+  RRDBCon *con, unsigned registrar_id, unsigned new_serial)
 {
   gzFile gz = gzopen(filename, "rb");
   if (!gz)
@@ -603,7 +632,7 @@ bool rr_rpsl_import_gz(const char *registrar, const char *filename)
     return false;
   }
 
-  bool ret = rr_rpsl_import_gzFILE(registrar, gz);
+  bool ret = rr_rpsl_import_gzFILE(registrar, gz, con, registrar_id, new_serial);
   gzclose(gz);
   return ret;
 }

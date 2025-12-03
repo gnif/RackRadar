@@ -17,7 +17,7 @@ void rr_db_start   (RRDBCon *con);
 void rr_db_commit  (RRDBCon *con);
 void rr_db_rollback(RRDBCon *con);
 
-bool rr_db_execute_stmt(RRDBStmt *stmt);
+bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows);
 void rr_db_stmt_free   (RRDBStmt **rs);
 
 typedef struct RRDBOrg
@@ -60,10 +60,24 @@ typedef struct RRDBNetBlockV6
 }
 RRDBNetBlockV6;
 
-unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial);
+typedef struct RRDBStatistics
+{
+  unsigned long long
+    newOrgs,
+    deletedOrgs,
+
+    newIPv4,
+    deletedIPv4,
+
+    newIPv6,
+    deletedIPv6;
+}
+RRDBStatistics;
+
+unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial, unsigned *last_import);
 bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);
 bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV4 *bind);
 bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV6 *bind);
-bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial);
+bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats);
 
 #endif
