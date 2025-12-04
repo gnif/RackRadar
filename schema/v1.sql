@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   registrar_id INT     UNSIGNED NOT NULL,
   serial       INT     UNSIGNED NOT NULL,
   org_id       INT     UNSIGNED NULL DEFAULT NULL,
-  org_id_str   VARCHAR(32)      NULL DEFAULT NULL,
+  org_id_str   VARCHAR(32)      NOT NULL DEFAULT '',
   start_ip     INT     UNSIGNED NOT NULL,
   end_ip       INT     UNSIGNED NOT NULL,
   prefix_len   TINYINT UNSIGNED NOT NULL,
@@ -64,8 +64,8 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   KEY idx_registrar  (registrar_id),
   KEY idx_org_id_str (org_id_str),
 
-  CONSTRAINT uk_start_end_ip
-    UNIQUE INDEX (registrar_id, start_ip, end_ip),
+  CONSTRAINT uk_constraint
+    UNIQUE INDEX (registrar_id, org_id_str, start_ip, end_ip),
 
   CONSTRAINT chk_range  CHECK (start_ip <= end_ip),
   CONSTRAINT chk_prefix CHECK (prefix_len BETWEEN 0 AND 32),
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   registrar_id INT     UNSIGNED NOT NULL,
   serial       INT     UNSIGNED NOT NULL,  
   org_id       INT     UNSIGNED NULL,
-  org_id_str   VARCHAR(32)      NULL DEFAULT NULL,  
+  org_id_str   VARCHAR(32)      NOT NULL DEFAULT '',  
   start_ip     BINARY(16)       NOT NULL,
   end_ip       BINARY(16)       NOT NULL,
   prefix_len   TINYINT UNSIGNED NOT NULL,
@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   KEY idx_org        (org_id),
   KEY idx_org_id_str (org_id_str),
 
-  CONSTRAINT uk_start_end_ip
-    UNIQUE INDEX (registrar_id, start_ip, end_ip),  
+  CONSTRAINT uk_constraint
+    UNIQUE INDEX (registrar_id, org_id_str, start_ip, end_ip),  
 
   CONSTRAINT chk_prefix_v6 CHECK (prefix_len BETWEEN 0 AND 128),
 

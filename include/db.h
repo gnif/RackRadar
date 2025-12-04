@@ -30,35 +30,25 @@ typedef struct RRDBOrg
 }
 RRDBOrg;
 
-typedef struct RRDBNetBlockV4
+typedef union RRDBAddr
 {
-  unsigned registrar_id;
-  unsigned serial;
-  char     org_id_str[33];
-  char     org_id_str_null;
-  uint32_t startAddr;
-  uint32_t endAddr;
-  uint8_t  prefixLen;
-  char     org    [256 ];
-  char     netname[256 ];
-  char     descr  [8192];
+  uint32_t          v4;
+  unsigned __int128 v6;
 }
-RRDBNetBlockV4;
+RRDBAddr;
 
-typedef struct RRDBNetBlockV6
+typedef struct RRDBNetBlock
 {
   unsigned registrar_id;
   unsigned serial;
   char     org_id_str[33];
-  char     org_id_str_null;
-  unsigned __int128 startAddr;
-  unsigned __int128 endAddr;
+  RRDBAddr startAddr;
+  RRDBAddr endAddr;
   uint8_t  prefixLen;
-  char     org    [256 ];
   char     netname[256 ];
   char     descr  [8192];
 }
-RRDBNetBlockV6;
+RRDBNetBlock;
 
 typedef struct RRDBStatistics
 {
@@ -76,8 +66,8 @@ RRDBStatistics;
 
 unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial, unsigned *last_import);
 bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);
-bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV4 *bind);
-bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV6 *bind);
+bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
+bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
 bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats);
 
 #endif

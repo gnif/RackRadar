@@ -6,16 +6,21 @@ pkg_check_modules(LIBCONFIG REQUIRED IMPORTED_TARGET "libconfig")
 pkg_check_modules(MARIADB_CLIENT REQUIRED IMPORTED_TARGET "libmariadb")
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET "libcurl")
 pkg_check_modules(ZLIB REQUIRED IMPORTED_TARGET "zlib")
+pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET "minizip")
+pkg_check_modules(EXPAT REQUIRED IMPORTED_TARGET "expat")
 pkg_check_modules(ICU REQUIRED IMPORTED_TARGET "icu-uc icu-i18n")
 find_package(Iconv REQUIRED)
 
 add_executable(RackRadar
   src/main.c
   src/log.c
+  src/util.c
   src/config.c
+  src/download.c  
+  src/zip.c
   src/db.c
   src/rpsl.c
-  src/download.c
+  src/arin.c
 )
 
 include_directories(RackRadar PRIVATE
@@ -24,6 +29,8 @@ include_directories(RackRadar PRIVATE
   ${MARIADB_CLIENT_INCLUDE_DIRS}
   ${CURL_INCLUDE_DIRS}  
   ${ZLIB_INCLUDE_DIRS}
+  ${EXPAT_INCLUDE_DIRS}  
+  ${MINIZIP_INCLUDE_DIRS}
   ${ICU_INCLUDE_DIRS}
   ${Iconv_INCLUDE_DIRS}
 )
@@ -33,6 +40,8 @@ target_link_libraries(RackRadar
   ${MARIADB_CLIENT_LIBRARIES}
   ${CURL_LIBRARIES}  
   ${ZLIB_LIBRARIES}
+  ${EXPAT_LIBRARIES}
+  ${MINIZIP_LIBRARIES}
   ${ICU_LIBRARIES}  
   ${Iconv_LIBRARIES}
 )

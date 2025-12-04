@@ -3,10 +3,10 @@
 
 #include "log.h"
 #include "config.h"
+#include "download.h"
 #include "db.h"
 #include "rpsl.h"
-#include "download.h"
-
+#include "arin.h"
 
 int main(int argc, char *argv)
 {
@@ -37,28 +37,17 @@ int main(int argc, char *argv)
   for(unsigned i = 0; i < g_config.nbSources; ++i)
   {
     typeof(*g_config.sources) *src = &g_config.sources[i];
-    const char * filename;
-    switch(src->type)
-    {
-      case SOURCE_TYPE_INVALID:
-        continue;
+    if (src->type == SOURCE_TYPE_INVALID)
+      continue;
 
-      case SOURCE_TYPE_RPSL:
-        filename = "/tmp/rr.db.gz";
-        break;
-      
-      case SOURCE_TYPE_ARIN:
-        continue; //FIXME: no ARIN support yet
-        filename = "/tmp/arin.zip";
-        break;
-    };
-
+    rr_db_start(con);
     unsigned serial, last_import;
     unsigned registrar_id =
       rr_db_get_registrar_id(con, src->name, true, &serial, &last_import);
     if (last_import > 0 && time(NULL) - last_import >= src->frequency)
     {
       LOG_INFO("Skipping %s, not time yet", src->name);
+      rr_db_rollback(con);
       continue;
     }
 
@@ -72,24 +61,33 @@ int main(int argc, char *argv)
     if (!rr_download_to_tmpfile(dl, src->url, &fp))
     {
       LOG_ERROR("failed fetch for %s", src->name);
+      rr_db_rollback(con);
       continue;
     }
 
+    ++serial;
+    bool success = false;
     switch(src->type)
     {
       case SOURCE_TYPE_RPSL:
-        rr_rpsl_import_gz_FILE(src->name, fp, con, registrar_id, serial + 1);
+        success = rr_rpsl_import_gz_FILE(src->name, fp, con, registrar_id, serial);
         break;
 
       case SOURCE_TYPE_ARIN:
+        success = rr_arin_import_zip_FILE(src->name, fp, con, registrar_id, serial);
         break;
 
       default:
         assert(false);
     }
 
+    if (success)
+      rr_db_commit(con);
+    else
+      rr_db_rollback(con);
+
     fclose(fp);
-  }
+  }  
 
   rr_db_putCon(&con);
   rr_download_deinit(&dl);

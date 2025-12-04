@@ -18,10 +18,17 @@ enum RecordType
   RECORD_TYPE_INET6NUM
 };
 
+enum Registrar
+{
+  REGISTRAR_GENERIC,
+  REGISTRAR_RIPE,
+  REGISTRAR_APNIC
+};
+
 struct ProcessState
 {
   unsigned serial;
-  bool isRIPE;
+  enum Registrar registrar;
 
   bool            inRecord;
   enum RecordType recordType;
@@ -38,179 +45,32 @@ struct ProcessState
 
   union
   {
-    RRDBOrg        org;
-    RRDBNetBlockV4 inetnum;
-    RRDBNetBlockV6 inet6num;
+    RRDBOrg      org;
+    RRDBNetBlock inetnum;
   }
   x;
 
   RRDBStatistics stats;
 };
 
-#include <unicode/ucsdet.h>
-#include <unicode/ucnv.h>
-#include <unicode/utypes.h>
-
-static size_t scrub_invalid_utf8_inplace(char *s, size_t cap)
+static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
 {
-  if (!s || cap == 0) return 0;
-
-  size_t len = strnlen(s, cap);
-  size_t i = 0, o = 0;
-
-  while (i < len && o + 1 < cap)
+  switch(state->registrar)
   {
-    unsigned char b0 = (unsigned char)s[i];
+    case REGISTRAR_RIPE:
+      return
+        (strncmp(state->x.inetnum.netname, "NON-RIPE-", 9) == 0) ||
+        (strncmp(state->x.inetnum.netname, "IANA-BLK" , 8) == 0);
 
-    if (b0 < 0x80)
-    {
-      s[o++] = s[i++];
-      continue;
-    }
+    case REGISTRAR_APNIC:
+      return
+        (strncmp(state->x.inetnum.netname, "IANA-NETBLOCK-" , 14) == 0) ||
+        (strncmp(state->x.inetnum.netname, "IANA-BLOCK"     , 10) == 0) ||
+        (strncmp(state->x.inetnum.netname, "ARIN-CIDR-BLOCK", 15) == 0);
 
-    size_t need = 0;
-    // Determine sequence length + validate first continuation constraints
-    if (b0 >= 0xC2 && b0 <= 0xDF) need = 2;
-    else if (b0 == 0xE0) need = 3;
-    else if (b0 >= 0xE1 && b0 <= 0xEC) need = 3;
-    else if (b0 == 0xED) need = 3;
-    else if (b0 >= 0xEE && b0 <= 0xEF) need = 3;
-    else if (b0 == 0xF0) need = 4;
-    else if (b0 >= 0xF1 && b0 <= 0xF3) need = 4;
-    else if (b0 == 0xF4) need = 4;
-    else { i++; continue; } // invalid lead byte
-
-    if (i + need > len) break; // truncated sequence at end
-
-    unsigned char b1 = (unsigned char)s[i + 1];
-    if ((b1 & 0xC0) != 0x80) { i++; continue; }
-
-    if (need == 3) {
-      unsigned char b2 = (unsigned char)s[i + 2];
-      if ((b2 & 0xC0) != 0x80) { i++; continue; }
-
-      // E0: b1 >= A0 (avoid overlong)
-      if (b0 == 0xE0 && b1 < 0xA0) { i++; continue; }
-      // ED: b1 <= 9F (avoid surrogate range)
-      if (b0 == 0xED && b1 > 0x9F) { i++; continue; }
-    } else if (need == 4) {
-      unsigned char b2 = (unsigned char)s[i + 2];
-      unsigned char b3 = (unsigned char)s[i + 3];
-      if (((b2 & 0xC0) != 0x80) || ((b3 & 0xC0) != 0x80)) { i++; continue; }
-
-      // F0: b1 >= 90 (avoid overlong)
-      if (b0 == 0xF0 && b1 < 0x90) { i++; continue; }
-      // F4: b1 <= 8F (<= U+10FFFF)
-      if (b0 == 0xF4 && b1 > 0x8F) { i++; continue; }
-    }
-
-    // Valid sequence: copy bytes as-is
-    for (size_t k = 0; k < need && o + 1 < cap; k++)
-      s[o++] = s[i + k];
-    i += need;
+    case REGISTRAR_GENERIC:
+      return false;
   }
-
-  s[o] = '\0';
-  return o;
-}
-
-static bool sanatize(char *text, size_t maxLen)
-{
-  bool ret = false;
-  char *buf = NULL;
-  size_t textLen = strlen(text);
-
-  UErrorCode status = U_ZERO_ERROR;
-  UCharsetDetector *det = ucsdet_open(&status);
-  if (U_FAILURE(status))
-  {
-    LOG_ERROR("ucsdet_open failed: %s", u_errorName(status));
-    goto err;
-  }
-
-  ucsdet_setText(det, text, textLen, &status);
-  if (U_FAILURE(status))
-    goto err_ucsdet;
-
-  const UCharsetMatch *m = ucsdet_detect(det, &status);
-  if (U_FAILURE(status) || !m)
-  {
-    // failure to detect just means we clobber anything invalid
-    // no error/warning needed
-    goto err_ucsdet;
-  }
-
-  const char *name = ucsdet_getName(m, &status);
-  if (U_FAILURE(status) || !name)
-  {
-    LOG_ERROR("ucsdet_getName failed: %s", u_errorName(status));
-    goto err_ucsdet;
-  }
-
-  int32_t conf = ucsdet_getConfidence(m, &status);
-  if (U_FAILURE(status))
-  {
-    LOG_ERROR("ucsdet_getConfidence failed: %s", u_errorName(status));
-    goto err_ucsdet;
-  }
-
-  if (strcmp(name, "UTF-8"     ) == 0 ||
-      strcmp(name, "US-ASCII"  ) == 0)
-    goto out;
-
-  // false positives but still need checking for non-ascii
-  if (strcmp(name, "IBM424_rtl") == 0 ||
-      strcmp(name, "IBM424_ltr") == 0 ||
-      strcmp(name, "IBM420_rtl") == 0 ||
-      strcmp(name, "IBM420_ltr") == 0)
-    goto err_ucsdet;
-
-  if (!(buf = (char *)malloc(maxLen)))
-  {
-    LOG_ERROR("out of memory");
-    goto err_ucsdet;
-  }
-
-  status = U_ZERO_ERROR;
-  size_t len = ucnv_convert("UTF-8", name, buf, maxLen-1, text, textLen, &status);
-  if (U_FAILURE(status))
-  {
-    LOG_ERROR("ucnv_convert failed (%s -> UTF-8, conf: %d): %s", name, conf, u_errorName(status));
-    goto err_ucsdet;
-  }
-
-  memcpy(text, buf, len);
-  text[len] = '\0';
-
-out:
-  ret = true;
-err_ucsdet:
-  ucsdet_close(det);
-
-  if (ret)
-  {
-    // there still can be invalid sequences to remove if utf-8 was detected
-    scrub_invalid_utf8_inplace(text, maxLen);
-  }
-  else
-  {
-    // if failed to convert, just remove non-ascii chars  
-    char * p = text;
-    for(int i = 0; i < textLen; ++i)
-    {
-      if (text[i] != '\n' && (text[i] < 32 || text[i] > 126))
-        continue;
-
-      *p = text[i];
-      ++p;
-    }
-    *p = '\0';
-    ret = true;
-  }
-
-err:
-  free(buf);
-  return ret;
 }
 
 static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
@@ -229,33 +89,29 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           break;
 
         case RECORD_TYPE_ORG:
-          ++state->numOrg;
+
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
           rr_db_execute_stmt(state->stmtOrg, &ra);
           if (ra == 1)
             ++state->stats.newOrgs;
-
-          ++state->numOrg;
+          ++state->numOrg;            
           break;
 
         case RECORD_TYPE_INETNUM:
-          if (state->isRIPE && strncmp(state->x.inetnum.netname, "NON-RIPE-", 9) == 0)
+        {
+          if (rr_rpsl_skip_inetnum(state))
             break;
 
-          ++state->numInetnum;
-          state->x.inetnum.registrar_id    = state->registrar_id;
-          state->x.inetnum.serial          = state->serial;
-          state->x.inetnum.org_id_str_null = state->x.inetnum.org_id_str[0] == '\0';
+          state->x.inetnum.registrar_id = state->registrar_id;
+          state->x.inetnum.serial       = state->serial;
 
-          // convert to host order and calculate the cidr prefix len
-          state->x.inetnum.startAddr = ntohl(state->x.inetnum.startAddr);
-          state->x.inetnum.endAddr   = ntohl(state->x.inetnum.endAddr  );
+          // calculate the cidr prefix len
           state->x.inetnum.prefixLen = rr_ipv4_to_cidr(
-            state->x.inetnum.startAddr,
-            state->x.inetnum.endAddr);
+            state->x.inetnum.startAddr.v4,
+            state->x.inetnum.endAddr  .v4);
 
-          sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
+          rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
           rr_db_execute_stmt(state->stmtNetBlockV4, &ra);
           if (ra == 1)
             ++state->stats.newIPv4;
@@ -264,26 +120,26 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           break;
 
         case RECORD_TYPE_INET6NUM:
-          if (state->isRIPE && strncmp(state->x.inetnum.netname, "NON-RIPE-", 9) == 0)
+          if (rr_rpsl_skip_inetnum(state))
             break;
         
-          state->x.inet6num.registrar_id    = state->registrar_id;
-          state->x.inet6num.serial          = state->serial;
-          state->x.inet6num.org_id_str_null = state->x.inet6num.org_id_str[0] == '\0';
+          state->x.inetnum.registrar_id = state->registrar_id;
+          state->x.inetnum.serial       = state->serial;
 
           // calculate the end of the segment
           rr_calc_ipv6_cidr_end(
-            &state->x.inet6num.startAddr,
-            state->x.inet6num.prefixLen,
-            &state->x.inet6num.endAddr);
+            &state->x.inetnum.startAddr.v6,
+             state->x.inetnum.prefixLen,
+            &state->x.inetnum.endAddr  .v6);
 
-          sanatize(state->x.inet6num.descr, sizeof(state->x.inet6num.descr));
+          rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
           rr_db_execute_stmt(state->stmtNetBlockV6, &ra);
           if (ra == 1)
             ++state->stats.newIPv6;
 
           ++state->numInet6num;
           break;
+        }
       }
 
       state->inRecord   = false;
@@ -356,11 +212,14 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           return;
         }
 
-        static_assert(sizeof(state->x.inetnum.startAddr) == sizeof(struct in_addr));
-        if ((inet_pton(AF_INET, start, (void *)&state->x.inetnum.startAddr) != 1) ||
-            (inet_pton(AF_INET, end  , (void *)&state->x.inetnum.endAddr  ) != 1))
+        static_assert(sizeof(state->x.inetnum.startAddr.v4) == sizeof(struct in_addr));
+        if ((inet_pton(AF_INET, start, (void *)&state->x.inetnum.startAddr.v4) != 1) ||
+            (inet_pton(AF_INET, end  , (void *)&state->x.inetnum.endAddr  .v4) != 1))
           state->recordType = RECORD_TYPE_IGNORE;
 
+        // convert to host order
+        state->x.inetnum.startAddr.v4 = ntohl(state->x.inetnum.startAddr.v4);
+        state->x.inetnum.endAddr  .v4 = ntohl(state->x.inetnum.endAddr  .v4);
         return;
       }
 
@@ -375,15 +234,15 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           return;
         }
 
-        static_assert(sizeof(state->x.inet6num.startAddr) == sizeof(struct in6_addr));        
-        if (inet_pton(AF_INET6, start, (void *)&state->x.inet6num.startAddr) != 1)
+        static_assert(sizeof(state->x.inetnum.startAddr.v6) == sizeof(struct in6_addr));        
+        if (inet_pton(AF_INET6, start, (void *)&state->x.inetnum.startAddr.v6) != 1)
         {
           state->recordType = RECORD_TYPE_IGNORE;
           return;
         }
 
-        state->x.inet6num.prefixLen = strtoul(prefixLen, NULL, 10);
-        if (state->x.inet6num.prefixLen > 64)
+        state->x.inetnum.prefixLen = strtoul(prefixLen, NULL, 10);
+        if (state->x.inetnum.prefixLen > 64)
           state->recordType = RECORD_TYPE_IGNORE;
 
         return;
@@ -421,8 +280,8 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
     case RECORD_TYPE_INET6NUM:
       if (0) {}
       MATCH("org"    , inetnum.org_id_str, false);      
-      MATCH("netname", inet6num.netname  , false);
-      MATCH("descr"  , inet6num.descr    , true );
+      MATCH("netname", inetnum.netname   , false);
+      MATCH("descr"  , inetnum.descr     , true );
       break;
   }
 
@@ -457,10 +316,15 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
 
   struct ProcessState state =
   {
-    .isRIPE     = strcmp(registrar, "RIPE") == 0,
-    .inRecord   = false,
-    .recordType = RECORD_TYPE_IGNORE
+    .inRecord     = false,
+    .recordType   = RECORD_TYPE_IGNORE,
+    .registrar_id = registar_id,
+    .serial       = new_serial
   };
+
+  if     (strcmp(registrar, "RIPE" ) == 0) state.registrar = REGISTRAR_RIPE;
+  else if(strcmp(registrar, "APNIC") == 0) state.registrar = REGISTRAR_APNIC;
+  else                                     state.registrar = REGISTRAR_GENERIC;
 
   if (!gz)
   {
@@ -493,17 +357,12 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
     goto err_realloc;
   }
 
-  if (!rr_db_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inet6num))
+  if (!rr_db_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
   {
     LOG_ERROR("failed to prepare the netblockv6 statement");
     goto err_realloc;
   }
 
-  rr_db_start(con);
-  unsigned last_import;
-  state.registrar_id = rr_db_get_registrar_id(con, registrar, true, &state.serial, &last_import);
-  ++state.serial;
-  
   while((n = gzread(gz, ptr, buf + bufSize - ptr)) > 0)
   {
     uint8_t *p = ptr;
@@ -558,7 +417,6 @@ err_realloc:
 
   if (ret)
   {
-    rr_db_commit(con);
     uint64_t elapsed = rr_microtime() - startTime;
     uint64_t sec     = elapsed / 1000000UL;
     uint64_t us      = elapsed % 1000000UL;
@@ -575,9 +433,7 @@ err_realloc:
         (unsigned)(sec % 60),
         (unsigned)(us / 1000));
   }
-  else
-    rr_db_rollback(con);
-  rr_db_putCon(&con);
+  
   free(buf);
 err_gzopen:
   LOG_INFO(ret ? "success" : "failure");

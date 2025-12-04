@@ -440,9 +440,9 @@ bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
       "?,"
       "?"
     ") ON DUPLICATE KEY UPDATE "
-      "serial = VALUES(serial), "
+      "serial   = VALUES(serial), "
       "org_name = VALUES(org_name), "
-      "descr = VALUES(descr)",
+      "descr    = VALUES(descr)",
 
     &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
@@ -458,7 +458,7 @@ bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
   return true;
 }
 
-bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV4 *bind)
+bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
 {
   RRDBStmt *st = rr_db_query_stmt(
     con->con,
@@ -481,17 +481,15 @@ bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
       "?,"
       "?"
     ") ON DUPLICATE KEY UPDATE "
-      "serial = VALUES(serial), "
-      "org_id_str = VALUES(org_id_str), "
+      "serial  = VALUES(serial), "
       "netname = VALUES(netname), "
-      "descr = VALUES(descr)",
+      "descr   = VALUES(descr)",
 
     &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str  ,
-      .is_null = &bind->org_id_str_null },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->startAddr   , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->endAddr     , .is_unsigned = true },
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str },
+    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->startAddr.v4, .is_unsigned = true },
+    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->endAddr  .v4, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_TINY  , .bind = &bind->prefixLen   , .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->netname },
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->descr   },
@@ -505,7 +503,7 @@ bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
   return true;
 }
 
-bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlockV6 *bind)
+bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
 {
   RRDBStmt *st = rr_db_query_stmt(
     con->con,
@@ -528,17 +526,15 @@ bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
       "?,"
       "?"
     ") ON DUPLICATE KEY UPDATE "
-      "serial = VALUES(serial), "
-      "org_id_str = VALUES(org_id_str), "
+      "serial  = VALUES(serial), "
       "netname = VALUES(netname), "
-      "descr = VALUES(descr)",
+      "descr   = VALUES(descr)",
 
     &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str  ,
-      .is_null = &bind->org_id_str_null },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->startAddr   , .is_binary   = true, .size = sizeof(bind->startAddr) },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->endAddr     , .is_binary   = true, .size = sizeof(bind->endAddr  ) },
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str },
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->startAddr.v6, .is_binary   = true, .size = sizeof(bind->startAddr) },
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->endAddr  .v6, .is_binary   = true, .size = sizeof(bind->endAddr  ) },
     &(RRDBParam){ .type = MYSQL_TYPE_TINY  , .bind = &bind->prefixLen   , .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->netname },
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->descr   },
@@ -569,7 +565,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     return false;
   }
   rr_db_stmt_free(&st);
-
+#if 0
   // delete all old records
   st = rr_db_query_stmt(con->con,
     "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
@@ -601,14 +597,15 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
-    NULL);
+    NULL);    
 
   if (!st || !rr_db_execute_stmt(st, &stats->deletedOrgs))
   {
     rr_db_stmt_free(&st);
     return false;
-  }
+  }  
   rr_db_stmt_free(&st);
+#endif
 
   // link orgs to netblocks
   st = rr_db_query_stmt(con->con,
