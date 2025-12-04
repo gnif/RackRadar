@@ -4,6 +4,8 @@
 
 #include <mysql.h>
 #include <string.h>
+#include <pthread.h>
+#include <unistd.h>
 
 struct RRDBCon
 {
@@ -16,8 +18,12 @@ static struct
 {
   bool  initialized;
 
-  RRDBCon *pool;
-  size_t   sz_pool;
+  RRDBCon         *pool;
+  size_t           sz_pool;
+  pthread_mutex_t  pool_lock;
+
+  bool      running;
+  pthread_t thread;
 }
 db = { 0 };
 
@@ -47,6 +53,32 @@ typedef struct RRDBParam
   size_t size;
 }
 RRDBParam;
+
+static void * rr_db_thread(void *opaque)
+{
+  LOG_INFO("db thread started");
+  unsigned ticks = 0;
+  while(db.running)
+  {
+    ++ticks;
+    if (ticks % 10 == 0)
+    {
+      pthread_mutex_lock(&db.pool_lock);
+      for(size_t i = 0; i < db.sz_pool; ++i)
+      {
+        RRDBCon *con = db.pool + i;
+        if (con->in_use)
+          continue;
+
+        mysql_ping(&con->con);
+      }
+      pthread_mutex_unlock(&db.pool_lock);
+    }
+
+    usleep(1000000);
+  }
+  LOG_INFO("db thread finished");
+}
 
 bool rr_db_init(void)
 {
@@ -96,13 +128,25 @@ bool rr_db_init(void)
     mysql_autocommit(&con->con, 0);
   }
 
+  db.running = true;
+  pthread_mutex_init(&db.pool_lock, NULL);
+  if (pthread_create(&db.thread, NULL, rr_db_thread, NULL) != 0)
+  { 
+    LOG_ERROR("Failed to create the database thread");
+    rr_db_deinit();
+    return false;
+  }
+
   db.initialized = true;
-  LOG_INFO("database ready");
+  LOG_INFO("database pool ready");
   return true;
 }
 
 void rr_db_deinit(void)
 {
+  db.running = false;
+  pthread_join(db.thread, NULL);
+
   for(size_t i = 0; i < db.sz_pool; ++i)
   {
     RRDBCon *con = db.pool + i;
@@ -114,6 +158,10 @@ void rr_db_deinit(void)
 
 bool rr_db_get(RRDBCon **out)
 {
+  if (!db.initialized)
+    return false;
+
+  pthread_mutex_lock(&db.pool_lock);
   for(size_t i = 0; i < db.sz_pool; ++i)
   {
     RRDBCon *con = db.pool + i;
@@ -121,15 +169,19 @@ bool rr_db_get(RRDBCon **out)
     {
       con->in_use = true;
       *out = con;
+      pthread_mutex_unlock(&db.pool_lock);
       return true;
     }
   }
+  pthread_mutex_unlock(&db.pool_lock);
   return false;
 }
 
 void rr_db_put(RRDBCon **con)
 {
+  pthread_mutex_lock(&db.pool_lock);
   (*con)->in_use = false;
+  pthread_mutex_unlock(&db.pool_lock);
   *con = NULL;
 }
 

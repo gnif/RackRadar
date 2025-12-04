@@ -44,4 +44,5 @@ target_link_libraries(RackRadar
   ${MINIZIP_LIBRARIES}
   ${ICU_LIBRARIES}  
   ${Iconv_LIBRARIES}
+  pthread
 )

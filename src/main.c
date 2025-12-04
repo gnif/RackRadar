@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include "log.h"
 #include "config.h"
@@ -87,7 +88,7 @@ int main(int argc, char *argv)
       rr_db_rollback(con);
 
     fclose(fp);
-  }  
+  }
 
   rr_db_put(&con);
   rr_download_deinit(&dl);
