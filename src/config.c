@@ -38,7 +38,7 @@ static config_t s_config = { 0 };
 bool rr_config_init(void)
 {
   config_init(&s_config);
-  if (config_read_file(&s_config, "settings.cfg") != CONFIG_TRUE)
+  if (config_read_file(&s_config, "/etc/rackradar/main.cfg") != CONFIG_TRUE)
   {
     LOG_ERROR("%s %s:%d",
       config_error_text(&s_config),
