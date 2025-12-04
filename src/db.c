@@ -5,21 +5,25 @@
 #include <mysql.h>
 #include <string.h>
 
+struct RRDBCon
+{
+  unsigned id;
+  bool     in_use;
+  MYSQL    con;
+};
+
 static struct
 {
   bool  initialized;
-  MYSQL con;
+
+  RRDBCon *pool;
+  size_t   sz_pool;
 }
 db = { 0 };
 
-struct RRDBCon
-{
-  MYSQL *con;
-};
-
 struct RRDBStmt
 {
-  MYSQL         *con;
+  RRDBCon       *con;
   MYSQL_STMT    *stmt;
   MYSQL_BIND    *bind;
   unsigned long *lengths;
@@ -46,74 +50,105 @@ RRDBParam;
 
 bool rr_db_init(void)
 {
-  if (!mysql_init(&db.con))
+  if (db.initialized)
+    rr_db_deinit();
+
+  LOG_INFO("Setitng up %d connections", g_config.database.pool);
+
+  db.pool = calloc(g_config.database.pool, sizeof(RRDBCon));
+  if (!db.pool)
   {
-    LOG_ERROR("mysql_init failed");
+    LOG_ERROR("out of memory");
     return false;
   }
 
-  mysql_options(&db.con, MYSQL_SET_CHARSET_NAME, "utf8mb4");
-
-  if (!mysql_real_connect(
-    &db.con,
-    g_config.database.port != 0 ? g_config.database.host : NULL,
-    g_config.database.user,
-    g_config.database.pass,
-    g_config.database.name,
-    g_config.database.port,
-    g_config.database.port == 0 ? g_config.database.host : NULL,
-    0)
-  )
+  for(size_t i = 0; i < g_config.database.pool; ++i)
   {
-    LOG_ERROR("%s", mysql_error(&db.con));
-    return false;
-  };
+    RRDBCon *con = db.pool + i;
+    con->id = i;
 
-  mysql_query(&db.con, "SET collation_connection = 'utf8mb4_unicode_ci'");
-  mysql_autocommit(&db.con, 0);
+    if (!mysql_init(&con->con))
+    {
+      LOG_ERROR("mysql_init failed for connection %i", i);
+      rr_db_deinit();
+      return false;
+    }
+
+    mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+    if (!mysql_real_connect(
+      &con->con,
+      g_config.database.port != 0 ? g_config.database.host : NULL,
+      g_config.database.user,
+      g_config.database.pass,
+      g_config.database.name,
+      g_config.database.port,
+      g_config.database.port == 0 ? g_config.database.host : NULL,
+      0)
+    )
+    {
+      LOG_ERROR("%s", mysql_error(&con->con));
+      rr_db_deinit();
+      return false;
+    };
+    ++db.sz_pool;
+
+    mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
+    mysql_autocommit(&con->con, 0);
+  }
 
   db.initialized = true;
+  LOG_INFO("database ready");
   return true;
 }
 
 void rr_db_deinit(void)
 {
-  if (!db.initialized)
-    return;
-
-  mysql_close(&db.con);
-  db.initialized = false;
+  for(size_t i = 0; i < db.sz_pool; ++i)
+  {
+    RRDBCon *con = db.pool + i;
+    mysql_close(&con->con);    
+  }
+  free(db.pool);
+  memset(&db, 0, sizeof(db));  
 }
 
-bool rr_db_getCon(RRDBCon **con)
+bool rr_db_get(RRDBCon **out)
 {
-  //TODO: use a pool of connections
-  static RRDBCon t;
-  t.con = &db.con;
-  *con = &t;
-  return true;
+  for(size_t i = 0; i < db.sz_pool; ++i)
+  {
+    RRDBCon *con = db.pool + i;
+    if (!con->in_use)
+    {
+      con->in_use = true;
+      *out = con;
+      return true;
+    }
+  }
+  return false;
 }
 
-void rr_db_putCon(RRDBCon **con)
+void rr_db_put(RRDBCon **con)
 {
+  (*con)->in_use = false;
+  *con = NULL;
 }
 
 void rr_db_start(RRDBCon *con)
 {
   static const char * q = "START TRANSACTION";
-  mysql_real_query(con->con, q, sizeof(q)-1);
+  mysql_real_query(&con->con, q, sizeof(q)-1);
 }
 
 void rr_db_commit(RRDBCon *con)
 {
   static const char * q = "COMMIT";
-  mysql_real_query(con->con, q, sizeof(q)-1);
+  mysql_real_query(&con->con, q, sizeof(q)-1);
 }
 
 void rr_db_rollback(RRDBCon *con)
 {
   static const char * q = "ROLLBACK";
-  mysql_real_query(con->con, q, sizeof(q)-1);
+  mysql_real_query(&con->con, q, sizeof(q)-1);
 }
 
 static bool rr_db_is_stringish(enum enum_field_types t)
@@ -134,15 +169,15 @@ static bool rr_db_is_stringish(enum enum_field_types t)
   }
 }
 
-static RRDBStmt *rr_db_query_stmt(MYSQL *con, const char *sql, ...)
+static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
 {
-  MYSQL_STMT *stmt = mysql_stmt_init(con);
+  MYSQL_STMT *stmt = mysql_stmt_init(&con->con);
   if (!stmt)
     return NULL;
 
   if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0)
   {
-    LOG_ERROR("prepare stmt failed: %s", mysql_error(con));
+    LOG_ERROR("prepare stmt failed: %s", mysql_error(&con->con));
     LOG_ERROR("%s", sql);
     mysql_stmt_close(stmt);
     return NULL;
@@ -236,9 +271,11 @@ static RRDBStmt *rr_db_query_stmt(MYSQL *con, const char *sql, ...)
 
   if (mysql_stmt_bind_param(stmt, rs->bind) != 0)
   {
-    LOG_ERROR("bind failed: %s", mysql_error(con));
+    LOG_ERROR("bind failed: %s", mysql_error(&con->con));
     mysql_stmt_close(stmt);
-    free(rs->bind); free(rs->lengths); free(rs->is_null);
+    free(rs->bind);
+    free(rs->lengths);
+    free(rs->is_null);
     free(rs);
     return NULL;
   }
@@ -263,7 +300,7 @@ bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
   }
 
   if (affectedRows)
-    *affectedRows = mysql_affected_rows(stmt->con);
+    *affectedRows = mysql_affected_rows(&stmt->con->con);
 
   return true;
 }
@@ -371,7 +408,7 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
 
   if (create)
   {
-    if (!(st = rr_db_query_stmt(con->con,
+    if (!(st = rr_db_query_stmt(con,
       "INSERT IGNORE INTO registrar (name) VALUES (?)",
       &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = (char *)name  },
       NULL)))
@@ -384,7 +421,7 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
       goto err;
   }
 
-  if (!(st = rr_db_query_stmt(con->con,
+  if (!(st = rr_db_query_stmt(con,
     "SELECT id, serial, last_import FROM registrar WHERE name = ?",
     &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = (char *)name  },
     NULL)))
@@ -426,7 +463,7 @@ err:
 bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
 {
   RRDBStmt *st = rr_db_query_stmt(
-    con->con,
+    con,
     "INSERT INTO org ("
       "registrar_id, "
       "serial, "
@@ -461,7 +498,7 @@ bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
 bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
 {
   RRDBStmt *st = rr_db_query_stmt(
-    con->con,
+    con,
     "INSERT INTO netblock_v4 ("
       "registrar_id, "
       "serial, "
@@ -506,7 +543,7 @@ bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
 bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
 {
   RRDBStmt *st = rr_db_query_stmt(
-    con->con,
+    con,
     "INSERT INTO netblock_v6 ("
       "registrar_id, "
       "serial, "
@@ -553,7 +590,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   RRDBStmt *st;
 
   // update the registrar serial & import timestamp
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
@@ -565,9 +602,9 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     return false;
   }
   rr_db_stmt_free(&st);
-#if 0
+
   // delete all old records
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
@@ -580,7 +617,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   }
   rr_db_stmt_free(&st);
 
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "DELETE FROM netblock_v6 WHERE registrar_id = ? AND serial != ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
@@ -593,7 +630,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   }
   rr_db_stmt_free(&st);
 
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
     &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
@@ -605,10 +642,9 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
     return false;
   }  
   rr_db_stmt_free(&st);
-#endif
 
   // link orgs to netblocks
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "UPDATE netblock_v4 nb "
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "
@@ -623,7 +659,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   }
   rr_db_stmt_free(&st);
 
-  st = rr_db_query_stmt(con->con,
+  st = rr_db_query_stmt(con,
     "UPDATE netblock_v6 nb "
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "

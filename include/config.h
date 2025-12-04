@@ -8,7 +8,8 @@
   SETTING_INT(database.port, 3306       ) \
   SETTING_STR(database.user, "rackradar") \
   SETTING_STR(database.pass, "rackradar") \
-  SETTING_STR(database.name, "rackradar")  
+  SETTING_STR(database.name, "rackradar") \
+  SETTING_STR(database.pool, 8          )
 
 typedef struct Config
 {
@@ -19,6 +20,7 @@ typedef struct Config
     const char *user;
     const char *pass;
     const char *name;
+    int         pool;
   }
   database;
 

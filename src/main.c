@@ -28,7 +28,7 @@ int main(int argc, char *argv)
   }
 
   RRDBCon *con;
-  if (!rr_db_getCon(&con))
+  if (!rr_db_get(&con))
   {
     LOG_ERROR("out of connections");
     return EXIT_FAILURE;
@@ -89,7 +89,7 @@ int main(int argc, char *argv)
     fclose(fp);
   }  
 
-  rr_db_putCon(&con);
+  rr_db_put(&con);
   rr_download_deinit(&dl);
   rr_db_deinit();
   rr_config_deinit();

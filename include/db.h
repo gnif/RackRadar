@@ -10,8 +10,8 @@ typedef struct RRDBStmt RRDBStmt;
 bool rr_db_init(void);
 void rr_db_deinit(void);
 
-bool rr_db_getCon(RRDBCon **con);
-void rr_db_putCon(RRDBCon **con);
+bool rr_db_get(RRDBCon **out);
+void rr_db_put(RRDBCon **con);
 
 void rr_db_start   (RRDBCon *con);
 void rr_db_commit  (RRDBCon *con);
