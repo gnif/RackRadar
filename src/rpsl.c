@@ -310,8 +310,6 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
   RRDBCon *con, unsigned registar_id, unsigned new_serial)
 {
-  LOG_INFO("start import %s", registrar);
-  uint64_t startTime = rr_microtime();
   bool ret = false;
 
   struct ProcessState state =
@@ -417,21 +415,12 @@ err_realloc:
 
   if (ret)
   {
-    uint64_t elapsed = rr_microtime() - startTime;
-    uint64_t sec     = elapsed / 1000000UL;
-    uint64_t us      = elapsed % 1000000UL;
-
     LOG_INFO("RPSL Statistics");
     LOG_INFO("  Total Lines: %llu", lineNo           );
     LOG_INFO("  Orgs       : %llu", state.numOrg     );
     LOG_INFO("  Inetnum    : %llu", state.numInetnum );
     LOG_INFO("  Inet6num   : %llu", state.numInet6num);
     LOG_INFO("  Ignored    : %llu", state.numIngore  );
-    LOG_INFO("  Elapsed    : %02u:%02u:%02u.%03u",
-        (unsigned)(sec / 60 / 60),
-        (unsigned)(sec / 60 % 60),
-        (unsigned)(sec % 60),
-        (unsigned)(us / 1000));
   }
   
   free(buf);

@@ -106,7 +106,10 @@ bool rr_db_init(void)
       return false;
     }
 
-    mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4");
+    my_bool reconnect = true;
+    mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4" );    
+    mysql_options(&con->con, MYSQL_OPT_RECONNECT   , &reconnect);
+    
     if (!mysql_real_connect(
       &con->con,
       g_config.database.port != 0 ? g_config.database.host : NULL,
@@ -471,6 +474,8 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
 
     if (!rr_db_execute_stmt(st, NULL))
       goto err;
+
+    rr_db_stmt_free(&st);      
   }
 
   if (!(st = rr_db_query_stmt(con,
