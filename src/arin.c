@@ -450,7 +450,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
   XML_SetElementHandler      (state.p, xml_on_start, xml_on_end);
   XML_SetCharacterDataHandler(state.p, xml_on_text);
 
-  unsigned char buf[1024*64];
+  char buf[1024*64];
   for(;;)
   {
     int n = unzReadCurrentFile(uz, buf, sizeof(buf));
@@ -484,7 +484,6 @@ err_xml_parser:
   XML_ParserFree(state.p);
 err_addrs:
   free(state.addrs);
-err_open_file:
   unzCloseCurrentFile(uz);  
 err:
   rr_db_stmt_free(&state.stmtOrg);

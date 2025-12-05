@@ -110,7 +110,7 @@ bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
 
     if (!mysql_init(&con->con))
     {
-      LOG_ERROR("mysql_init failed for connection %i", i);
+      LOG_ERROR("mysql_init failed for connection %lu", i);
       rr_db_deinit();
       return false;
     }

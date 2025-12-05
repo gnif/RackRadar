@@ -42,7 +42,7 @@ typedef struct Config
       SOURCE_TYPE_ARIN
     }
     type;
-    unsigned frequency;
+    int frequency;
     const char *url;
     const char *user;
     const char *pass;

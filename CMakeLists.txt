@@ -12,6 +12,17 @@ pkg_check_modules(ICU REQUIRED IMPORTED_TARGET "icu-uc icu-i18n")
 pkg_check_modules(LIBMICROHTTPD REQUIRED IMPORTED_TARGET "libmicrohttpd")
 find_package(Iconv REQUIRED)
 
+add_compile_options(
+  "-Wall"
+  "-Wextra"
+  "-Wno-sign-compare"
+  "-Wno-unused-parameter"
+  "$<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes>"
+  "$<$<C_COMPILER_ID:GNU>:-Wimplicit-fallthrough=2>"
+  "-Werror"
+  "-Wfatal-errors"
+)
+
 add_executable(RackRadar
   src/main.c
   src/log.c
@@ -22,6 +33,10 @@ add_executable(RackRadar
   src/db.c
   src/rpsl.c
   src/arin.c
+)
+
+add_compile_definitions(RackRadar
+  _GNU_SOURCE
 )
 
 include_directories(RackRadar PRIVATE

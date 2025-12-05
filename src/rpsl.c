@@ -71,6 +71,7 @@ static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
     case REGISTRAR_GENERIC:
       return false;
   }
+  return false;
 }
 
 static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
@@ -197,6 +198,9 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
     switch(state->recordType)
     {
+      case RECORD_TYPE_IGNORE:
+        return;
+
       case RECORD_TYPE_ORG:
         strncpy(state->x.org.name, value, sizeof(state->x.org.name));
         return;
@@ -263,12 +267,14 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
   switch(state->recordType)
   {
+    case RECORD_TYPE_IGNORE:
+      return;
+
     case RECORD_TYPE_ORG:
-    {
       if (0) {}
       MATCH("org-name", org.org_name, false);
       MATCH("descr"   , org.descr   , true );
-    }
+      break;
 
     case RECORD_TYPE_INETNUM:
       if (0) {}      
@@ -380,6 +386,9 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
     {
       if (line == buf)
       {
+        const uintptr_t ptrOff  = ptr  - buf;
+        const uintptr_t lineOff = line - buf;
+
         bufSize *= 2;
         uint8_t *newBuf = realloc(buf, bufSize);
         if (!newBuf)
@@ -387,8 +396,8 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
           LOG_ERROR("out of memory");
           goto err_realloc;
         }
-        ptr  = newBuf + (ptr - buf);
-        line = newBuf + (line - buf);
+        ptr  = newBuf + ptrOff;
+        line = newBuf + lineOff;
         buf  = newBuf;
       }
       else
