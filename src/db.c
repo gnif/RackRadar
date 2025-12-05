@@ -12,11 +12,16 @@ struct RRDBCon
   unsigned id;
   bool     in_use;
   MYSQL    con;
+  void    *udata;
 };
 
 static struct
 {
   bool  initialized;
+
+  DBUdataFn  udataInitFn;
+  DBUdataFn  udataDeInitFn;
+  void      *udata;
 
   RRDBCon         *pool;
   size_t           sz_pool;
@@ -78,12 +83,16 @@ static void * rr_db_thread(void *opaque)
     usleep(1000000);
   }
   LOG_INFO("db thread finished");
+  return NULL;
 }
 
-bool rr_db_init(void)
+bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
 {
   if (db.initialized)
     rr_db_deinit();
+
+  db.udataInitFn   = udataInitFn;
+  db.udataDeInitFn = udataDeInitFn;
 
   LOG_INFO("Setitng up %d connections", g_config.database.pool);
 
@@ -129,6 +138,13 @@ bool rr_db_init(void)
 
     mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
     mysql_autocommit(&con->con, 0);
+
+    if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
+    {
+      LOG_ERROR("udataInitFn returned false");
+      rr_db_deinit();
+      return false;
+    }
   }
 
   db.running = true;
@@ -153,13 +169,17 @@ void rr_db_deinit(void)
   for(size_t i = 0; i < db.sz_pool; ++i)
   {
     RRDBCon *con = db.pool + i;
+
+    if (db.udataDeInitFn && !db.udataDeInitFn(con, &con->udata))
+      LOG_ERROR("udataDeInitFn returned false");
+
     mysql_close(&con->con);    
   }
   free(db.pool);
   memset(&db, 0, sizeof(db));  
 }
 
-bool rr_db_get(RRDBCon **out)
+bool rr_db_get(RRDBCon **out, void **udata)
 {
   if (!db.initialized)
     return false;
@@ -171,8 +191,11 @@ bool rr_db_get(RRDBCon **out)
     if (!con->in_use)
     {
       con->in_use = true;
-      *out = con;
       pthread_mutex_unlock(&db.pool_lock);
+
+      *out = con;
+      if (udata)
+        *udata = con->udata;
       return true;
     }
   }
@@ -430,7 +453,12 @@ bool rr_db_stmt_bind_results(RRDBStmt *s, ...)
   (void)va_arg(ap, int); // terminator
   va_end(ap);
 
-  return (mysql_stmt_bind_result(s->stmt, s->rbind) == 0);
+  if (mysql_stmt_bind_result(s->stmt, s->rbind) != 0)
+  {
+    LOG_ERROR("mysql_stmt_bind_result failed: %s", mysql_stmt_error(s->stmt));
+    return false;
+  }
+  return true;
 }
 
 void rr_db_stmt_free(RRDBStmt **rs)
@@ -744,3 +772,145 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
 
   return true;
 };
+
+bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *ipv4Bind)
+{
+  RRDBStmt *st;
+
+  st = rr_db_query_stmt(con,
+    "SELECT "
+      "a.id, "
+      "a.registrar_id, "
+      "a.org_id_str, "
+      "b.org_name, "
+      "a.start_ip, "
+      "a.end_ip, "
+      "a.prefix_len, "
+      "a.netname, "
+      "a.descr "
+    "FROM "
+      "netblock_v4   AS a "
+      "LEFT JOIN org AS b ON b.id = a.org_id "
+    "WHERE "
+      "start_ip <= ? AND end_ip >= ? "
+    "ORDER BY "
+      "start_ip DESC "
+    "LIMIT 1",
+    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = ipv4Bind, .is_unsigned = true },
+    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = ipv4Bind, .is_unsigned = true },
+    NULL);
+
+  if (!st)
+    return false;
+
+  *stmt = st;
+  return true;
+}
+
+bool rr_db_lookup_ipv4(RRDBStmt *stmt, RRDBIPInfo *info)
+{
+  bool ret = false;
+  if (!rr_db_stmt_bind_results(stmt,
+    MYSQL_TYPE_LONGLONG, &info->id          , 0,
+    MYSQL_TYPE_LONG    , &info->registrar_id, 0,
+    MYSQL_TYPE_STRING  , &info->org_id_str  , sizeof(info->org_id_str)-1,
+    MYSQL_TYPE_STRING  , &info->org_name    , sizeof(info->org_name  )-1,
+    MYSQL_TYPE_LONG    , &info->start_ip.v4 , 0,
+    MYSQL_TYPE_LONG    , &info->end_ip  .v4 , 0,
+    MYSQL_TYPE_TINY    , &info->prefix_len  , 0,
+    MYSQL_TYPE_STRING  , info->netname      , sizeof(info->netname)-1,
+    MYSQL_TYPE_STRING  , info->descr        , sizeof(info->descr  )-1,
+    MYSQL_TYPE_NULL))
+  {
+    LOG_ERROR("bind results failed");
+    goto err;
+  }
+
+  if(!rr_db_execute_stmt(stmt, NULL))
+    goto err;
+
+  if (mysql_stmt_store_result(stmt->stmt) != 0)
+  {
+    LOG_ERROR("store result failed");
+    goto err;
+  }
+
+  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
+    goto err;
+
+  mysql_stmt_free_result(stmt->stmt);
+  ret = true;
+  err:
+    return ret;
+}
+
+bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *ipv6Bind)
+{
+  RRDBStmt *st;
+
+  st = rr_db_query_stmt(con,
+    "SELECT "
+      "a.id, "
+      "a.registrar_id, "
+      "a.org_id_str, "
+      "b.org_name, "
+      "a.start_ip, "
+      "a.end_ip, "
+      "a.prefix_len, "
+      "a.netname, "
+      "a.descr "
+    "FROM "
+      "netblock_v6   AS a "
+      "LEFT JOIN org AS b ON b.id = a.org_id "
+    "WHERE "
+      "start_ip <= ? AND end_ip >= ? "
+    "ORDER BY "
+      "start_ip DESC "
+    "LIMIT 1",
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = ipv6Bind, .is_binary = true, .size = sizeof(ipv6Bind) },
+    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = ipv6Bind, .is_binary = true, .size = sizeof(ipv6Bind) },
+    NULL);
+
+  if (!st)
+    return false;
+
+  *stmt = st;
+  return true;
+}
+
+bool rr_db_lookup_ipv6(RRDBStmt *stmt, RRDBIPInfo *info)
+{
+  bool ret = false;
+  if (!rr_db_stmt_bind_results(stmt,
+    MYSQL_TYPE_LONGLONG, &info->id          , 0,
+    MYSQL_TYPE_LONG    , &info->registrar_id, 0,
+    MYSQL_TYPE_STRING  , &info->org_id_str  , sizeof(info->org_id_str)-1,
+    MYSQL_TYPE_STRING  , &info->org_name    , sizeof(info->org_name  )-1,
+    MYSQL_TYPE_STRING  , &info->start_ip.v6 , sizeof(info->start_ip.v6),
+    MYSQL_TYPE_STRING  , &info->end_ip  .v6 , sizeof(info->end_ip  .v6),
+    MYSQL_TYPE_TINY    , &info->prefix_len  , 0,
+    MYSQL_TYPE_STRING  , info->netname      , sizeof(info->netname)-1,
+    MYSQL_TYPE_STRING  , info->descr        , sizeof(info->descr  )-1,
+    MYSQL_TYPE_NULL))
+  {
+    LOG_ERROR("bind results failed");
+    goto err;
+  }
+
+  if(!rr_db_execute_stmt(stmt, NULL))
+    goto err;
+
+  if (mysql_stmt_store_result(stmt->stmt) != 0)
+  {
+    LOG_ERROR("store result failed");
+    goto err;
+  }
+
+  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
+    goto err;
+
+  mysql_stmt_free_result(stmt->stmt);
+  ret = true;
+  err:
+    return ret;
+}

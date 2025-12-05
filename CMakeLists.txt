@@ -9,6 +9,7 @@ pkg_check_modules(ZLIB REQUIRED IMPORTED_TARGET "zlib")
 pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET "minizip")
 pkg_check_modules(EXPAT REQUIRED IMPORTED_TARGET "expat")
 pkg_check_modules(ICU REQUIRED IMPORTED_TARGET "icu-uc icu-i18n")
+pkg_check_modules(LIBMICROHTTPD REQUIRED IMPORTED_TARGET "libmicrohttpd")
 find_package(Iconv REQUIRED)
 
 add_executable(RackRadar
@@ -33,6 +34,7 @@ include_directories(RackRadar PRIVATE
   ${MINIZIP_INCLUDE_DIRS}
   ${ICU_INCLUDE_DIRS}
   ${Iconv_INCLUDE_DIRS}
+  ${LIBMICROHTTPD_INCLUDE_DIRS}
 )
 
 target_link_libraries(RackRadar
@@ -44,5 +46,6 @@ target_link_libraries(RackRadar
   ${MINIZIP_LIBRARIES}
   ${ICU_LIBRARIES}  
   ${Iconv_LIBRARIES}
+  ${LIBMICROHTTPD_LIBRARIES}
   pthread
 )

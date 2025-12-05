@@ -169,6 +169,11 @@ err:
   return ret;
 }
 
+int rr_parse_ipv6_decimal(const char *str, unsigned __int128 *host)
+{
+  return inet_pton(AF_INET6, str, host);
+}
+
 int rr_parse_ipv4_decimal(const char *str, uint32_t *host)
 {
   const char *p = str;

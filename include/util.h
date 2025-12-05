@@ -13,6 +13,7 @@
 
 bool rr_sanatize(char *text, size_t maxLen);
 int rr_parse_ipv4_decimal(const char *str, uint32_t *host);
+int rr_parse_ipv6_decimal(const char *str, unsigned __int128 *host);
 
 static inline uint64_t rr_microtime(void)
 {

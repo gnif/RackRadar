@@ -9,7 +9,9 @@
   SETTING_STR(database.user, "rackradar") \
   SETTING_STR(database.pass, "rackradar") \
   SETTING_STR(database.name, "rackradar") \
-  SETTING_STR(database.pool, 8          )
+  SETTING_STR(database.pool, 8          ) \
+  \
+  SETTING_INT(http.port    , 8888       )
 
 typedef struct Config
 {
@@ -23,6 +25,12 @@ typedef struct Config
     int         pool;
   }
   database;
+
+  struct
+  {
+    int port;
+  }
+  http;
 
   struct
   {

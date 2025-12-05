@@ -88,7 +88,7 @@ static bool rr_download(RRDownload *h, const char *url, FILE *fp)
   curl_easy_getinfo(h->ch, CURLINFO_RESPONSE_CODE, &http_code);
   if (http_code >= 400)
   {
-    LOG_ERROR("Unexpected response: %d", http_code);
+    LOG_ERROR("Unexpected response: %ld", http_code);
     return false;
   }
 

@@ -1,8 +1,3 @@
-#include <stdlib.h>
-#include <assert.h>
-#include <unistd.h>
-#include <pthread.h>
-
 #include "log.h"
 #include "config.h"
 #include "download.h"
@@ -11,6 +6,30 @@
 #include "arin.h"
 #include "util.h"
 
+#include <stdlib.h>
+#include <assert.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <microhttpd.h>
+
+typedef struct DBConnectionData
+{
+  struct
+  {
+    RRDBStmt *stmt;
+    uint32_t  bind_ipv4;
+  }
+  lookupIPv4;
+
+  struct
+  {
+    RRDBStmt *stmt;
+    unsigned __int128 bind_ipv6;
+  }
+  lookupIPv6;  
+}
+DBConnectionData;
+
 bool running = true;
 RRDownload *dl = NULL;
 static void * import_thread(void *)
@@ -18,7 +37,8 @@ static void * import_thread(void *)
   while(running)
   {
     RRDBCon *con;
-    if (!rr_db_get(&con))
+    DBConnectionData *condata;
+    if (!rr_db_get(&con, (void **)&condata))
     {
       LOG_ERROR("out of connections");
       goto next;
@@ -39,13 +59,13 @@ static void * import_thread(void *)
       {
         LOG_ERROR("Failed to get the registrar id");
         rr_db_rollback(con);
-        continue;
+        goto next_con;
       }
 
       if (last_import > 0 && time(NULL) - last_import < src->frequency)
       {
         rr_db_rollback(con);
-        continue;
+        goto next_con;
       }
 
       LOG_INFO("Fetching source: %s", src->name);
@@ -59,7 +79,7 @@ static void * import_thread(void *)
       {
         LOG_ERROR("failed fetch for %s", src->name);
         rr_db_rollback(con);
-        continue;
+        goto next_con;
       }
 
       LOG_INFO("start import %s", src->name);
@@ -92,7 +112,6 @@ static void * import_thread(void *)
         resultStr = "failed";
         rr_db_rollback(con);
       }
-      rr_db_put(&con);
       fclose(fp);      
 
       uint64_t elapsed = rr_microtime() - startTime;
@@ -106,18 +125,175 @@ static void * import_thread(void *)
         (unsigned)(sec % 60),
         (unsigned)(us / 1000));
     }
+
+    next_con:
+    rr_db_put(&con);
     next:
     usleep(1000000);
   }
+  return NULL;
 }
 
-int main(int argc, char *argv)
+static enum MHD_Result httpd_handler(void * cls,
+  struct MHD_Connection * connection,
+  const char * url,
+  const char * method,
+  const char * version,
+  const char * upload_data,
+  size_t * upload_data_size,
+  void ** ptr)
+{
+  struct MHD_Response *res;
+
+  if (strcmp(method, "GET") != 0)
+    return MHD_NO;
+
+  if (strncmp(url, "/ip/", 4) == 0)
+  {
+    struct RRDBIPInfo info = {0};
+    char   ipstring[64];
+
+    const char * ip = url + 4;
+    if(strstr(ip, ":"))
+    {
+      unsigned __int128 ipv6;
+      if (rr_parse_ipv6_decimal(ip, &ipv6) != 1)
+      {
+        res = MHD_create_response_empty(MHD_RF_NONE); 
+        MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
+        MHD_destroy_response(res);
+        return MHD_YES;
+      }
+
+      RRDBCon * con;
+      DBConnectionData *condata;
+      if (!rr_db_get(&con, (void **)&condata))
+        return MHD_NO;;
+
+      condata->lookupIPv6.bind_ipv6 = ipv6;
+      if (!rr_db_lookup_ipv6(condata->lookupIPv6.stmt, &info))
+      {
+        rr_db_put(&con);
+        res = MHD_create_response_empty(MHD_RF_NONE); 
+        MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
+        MHD_destroy_response(res);
+        return MHD_YES;
+      }
+      rr_db_put(&con);
+
+      inet_ntop(AF_INET6, &info.start_ip.v6, ipstring, sizeof(ipstring));
+    }
+    else
+    {
+      uint32_t ipv4;
+      if (rr_parse_ipv4_decimal(ip, &ipv4) != 1)
+      {
+        res = MHD_create_response_empty(MHD_RF_NONE); 
+        MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
+        MHD_destroy_response(res);
+        return MHD_YES;
+      }
+
+      RRDBCon * con;
+      DBConnectionData *condata;
+      if (!rr_db_get(&con, (void **)&condata))
+        return MHD_NO;;
+
+      condata->lookupIPv4.bind_ipv4 = ipv4;
+      if (!rr_db_lookup_ipv4(condata->lookupIPv4.stmt, &info))
+      {
+        rr_db_put(&con);
+        res = MHD_create_response_empty(MHD_RF_NONE); 
+        MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
+        MHD_destroy_response(res);
+        return MHD_YES;
+      }
+      rr_db_put(&con);
+
+      uint32_t netip = htonl(info.start_ip.v4);
+      inet_ntop(AF_INET, &netip, ipstring, sizeof(ipstring));
+    }
+
+    char * buffer = malloc(16384);
+    int n = snprintf(buffer, 16384,
+      "netblock: %s/%d\n"
+      "netname : %s\n"
+      "org     : %s\n"
+      "org_name: %s\n"
+      "descr   : %s\n",
+      ipstring, info.prefix_len,
+      info.netname,
+      info.org_id_str,
+      info.org_name,
+      info.descr
+    );
+
+    res = MHD_create_response_from_buffer_with_free_callback(n, buffer, &(free));
+    MHD_add_response_header(res, "Content-Type", "text/plain");
+    MHD_queue_response(connection, MHD_HTTP_OK, res);
+    MHD_destroy_response(res);
+    return MHD_YES;
+  }
+
+  return MHD_NO;
+}
+
+static void httpd_panic_handler(
+  void *cls,
+  const char *file,
+  unsigned int line,
+  const char *reason)
+{
+  LOG_ERROR("%s:%u - %s", file, line, reason);
+}
+
+static bool db_udata_init(RRDBCon *con, void **udata)
+{
+  DBConnectionData *condata = calloc(1, sizeof(*condata));
+  if (!condata)
+  {
+    LOG_ERROR("out of memory");
+    return false;
+  }
+  *udata = condata;
+
+  if (!rr_db_prepare_lookup_ipv4(con, &condata->lookupIPv4.stmt, &condata ->lookupIPv4.bind_ipv4))
+  {
+    LOG_ERROR("rr_db_prepare_lookup_ipv4 failed");
+    return false;
+  }
+
+  if (!rr_db_prepare_lookup_ipv6(con, &condata->lookupIPv6.stmt, &condata ->lookupIPv6.bind_ipv6))
+  {
+    LOG_ERROR("rr_db_prepare_lookup_ipv6 failed");
+    return false;
+  }
+
+  return true;
+}
+
+static bool db_udata_deinit(RRDBCon *con, void **udata)
+{
+  if (!*udata)
+    return true;
+
+  DBConnectionData *condata = *udata;
+
+  rr_db_stmt_free(&condata->lookupIPv4.stmt);
+  rr_db_stmt_free(&condata->lookupIPv6.stmt);
+
+  free(condata);
+  *udata = NULL;  
+  return true;
+}
+
+int main(int argc, char *argv[])
 {
   rr_log_init();
   if (!rr_config_init())
     LOG_WARN("Failed to load config, using defaults");
 
-  if (!rr_db_init())
+  if (!rr_db_init(db_udata_init, db_udata_deinit))
   {
     LOG_ERROR("DB init failed, can not continue");
     return EXIT_FAILURE;
@@ -129,8 +305,24 @@ int main(int argc, char *argv)
     return EXIT_FAILURE;
   }
 
+  MHD_set_panic_func(httpd_panic_handler, NULL);
+  struct MHD_Daemon *d = MHD_start_daemon(
+    MHD_USE_THREAD_PER_CONNECTION,
+    g_config.http.port,
+    NULL,
+    NULL,
+    &httpd_handler, NULL,
+    MHD_OPTION_END);
+  if (!d)
+  {
+
+    LOG_ERROR("MHD_start_daemon failed");
+    return EXIT_FAILURE;
+  }
+
   import_thread(NULL);
 
+  MHD_stop_daemon(d);
   rr_download_deinit(&dl);
   rr_db_deinit();
   rr_config_deinit();
