@@ -16,15 +16,17 @@ typedef struct DBConnectionData
 {
   struct
   {
-    RRDBStmt *stmt;
-    uint32_t  bind_ipv4;
+    RRDBStmt  *stmt;
+    uint32_t   in_ipv4;
+    RRDBIPInfo out;
   }
   lookupIPv4;
 
   struct
   {
-    RRDBStmt *stmt;
-    unsigned __int128 bind_ipv6;
+    RRDBStmt           *stmt;
+    unsigned __int128   in_ipv6;
+    RRDBIPInfo          out;
   }
   lookupIPv6;  
 }
@@ -51,10 +53,10 @@ static void * import_thread(void *)
         continue;
 
       rr_db_start(con);
-      unsigned serial, last_import;
+      unsigned serial = 0;
+      unsigned last_import = 0;
       unsigned registrar_id =
         rr_db_get_registrar_id(con, src->name, true, &serial, &last_import);
-
       if (registrar_id == 0)
       {
         LOG_ERROR("Failed to get the registrar id");
@@ -65,7 +67,7 @@ static void * import_thread(void *)
       if (last_import > 0 && time(NULL) - last_import < src->frequency)
       {
         rr_db_rollback(con);
-        goto next_con;
+        continue;
       }
 
       LOG_INFO("Fetching source: %s", src->name);
@@ -150,7 +152,9 @@ static enum MHD_Result httpd_handler(void * cls,
 
   if (strncmp(url, "/ip/", 4) == 0)
   {
-    struct RRDBIPInfo info = {0};
+    RRDBCon          *con;
+    DBConnectionData *condata;
+    RRDBIPInfo       *info;
     char   ipstring[64];
 
     const char * ip = url + 4;
@@ -165,13 +169,11 @@ static enum MHD_Result httpd_handler(void * cls,
         return MHD_YES;
       }
 
-      RRDBCon * con;
-      DBConnectionData *condata;
       if (!rr_db_get(&con, (void **)&condata))
         return MHD_NO;;
 
-      condata->lookupIPv6.bind_ipv6 = ipv6;
-      if (!rr_db_lookup_ipv6(condata->lookupIPv6.stmt, &info))
+      condata->lookupIPv6.in_ipv6 = ipv6;
+      if (!rr_db_stmt_fetch_one(condata->lookupIPv6.stmt))
       {
         rr_db_put(&con);
         res = MHD_create_response_empty(MHD_RF_NONE); 
@@ -179,9 +181,10 @@ static enum MHD_Result httpd_handler(void * cls,
         MHD_destroy_response(res);
         return MHD_YES;
       }
-      rr_db_put(&con);
 
-      inet_ntop(AF_INET6, &info.start_ip.v6, ipstring, sizeof(ipstring));
+      inet_ntop(AF_INET6, &condata->lookupIPv6.out.start_ip.v6,
+        ipstring, sizeof(ipstring));
+      info = &condata->lookupIPv6.out;        
     }
     else
     {
@@ -194,13 +197,11 @@ static enum MHD_Result httpd_handler(void * cls,
         return MHD_YES;
       }
 
-      RRDBCon * con;
-      DBConnectionData *condata;
       if (!rr_db_get(&con, (void **)&condata))
         return MHD_NO;;
 
-      condata->lookupIPv4.bind_ipv4 = ipv4;
-      if (!rr_db_lookup_ipv4(condata->lookupIPv4.stmt, &info))
+      condata->lookupIPv4.in_ipv4 = ipv4;
+      if (!rr_db_stmt_fetch_one(condata->lookupIPv4.stmt))
       {
         rr_db_put(&con);
         res = MHD_create_response_empty(MHD_RF_NONE); 
@@ -208,10 +209,10 @@ static enum MHD_Result httpd_handler(void * cls,
         MHD_destroy_response(res);
         return MHD_YES;
       }
-      rr_db_put(&con);
 
-      uint32_t netip = htonl(info.start_ip.v4);
+      uint32_t netip = htonl(condata->lookupIPv4.out.start_ip.v4);
       inet_ntop(AF_INET, &netip, ipstring, sizeof(ipstring));
+      info = &condata->lookupIPv4.out;
     }
 
     char * buffer = malloc(16384);
@@ -221,12 +222,14 @@ static enum MHD_Result httpd_handler(void * cls,
       "org     : %s\n"
       "org_name: %s\n"
       "descr   : %s\n",
-      ipstring, info.prefix_len,
-      info.netname,
-      info.org_id_str,
-      info.org_name,
-      info.descr
+      ipstring,
+      info->prefix_len,
+      info->netname,
+      info->org_id_str,
+      info->org_name,
+      info->descr
     );
+    rr_db_put(&con);
 
     res = MHD_create_response_from_buffer_with_free_callback(n, buffer, &(free));
     MHD_add_response_header(res, "Content-Type", "text/plain");
@@ -257,13 +260,19 @@ static bool db_udata_init(RRDBCon *con, void **udata)
   }
   *udata = condata;
 
-  if (!rr_db_prepare_lookup_ipv4(con, &condata->lookupIPv4.stmt, &condata ->lookupIPv4.bind_ipv4))
+  if (!rr_db_prepare_lookup_ipv4(con,
+    &condata->lookupIPv4.stmt,
+    &condata->lookupIPv4.in_ipv4,
+    &condata->lookupIPv4.out))
   {
     LOG_ERROR("rr_db_prepare_lookup_ipv4 failed");
     return false;
   }
 
-  if (!rr_db_prepare_lookup_ipv6(con, &condata->lookupIPv6.stmt, &condata ->lookupIPv6.bind_ipv6))
+  if (!rr_db_prepare_lookup_ipv6(con,
+    &condata->lookupIPv6.stmt,
+    &condata->lookupIPv6.in_ipv6,
+    &condata->lookupIPv6.out))
   {
     LOG_ERROR("rr_db_prepare_lookup_ipv6 failed");
     return false;

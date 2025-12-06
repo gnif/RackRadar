@@ -1,11 +1,13 @@
 #include "db.h"
 #include "config.h"
 #include "log.h"
+#include "util.h"
 
 #include <mysql.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <assert.h>
 
 struct RRDBCon
 {
@@ -36,28 +38,22 @@ struct RRDBStmt
 {
   RRDBCon       *con;
   MYSQL_STMT    *stmt;
+
+  size_t         in_params;
+  RRDBType      *types;  
   MYSQL_BIND    *bind;
   unsigned long *lengths;
   my_bool       *is_null;
-  size_t         nparams;
-
+  
+  size_t         out_params;
+  RRDBType      *rtypes;
   MYSQL_BIND    *rbind;
   unsigned long *rlengths;
   my_bool       *ris_null;
   size_t         nresults;
 };
 
-typedef struct RRDBParam
-{
-  enum enum_field_types type;
-  void    *bind;
-  my_bool *is_null;
-
-  bool is_unsigned;
-  bool is_binary;
-  size_t size;
-}
-RRDBParam;
+#define RRDB_PARAM_OUT ((void *)((uintptr_t)-1))
 
 static void * rr_db_thread(void *opaque)
 {
@@ -137,7 +133,7 @@ bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
     ++db.sz_pool;
 
     mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
-    mysql_autocommit(&con->con, 0);
+    mysql_autocommit(&con->con, 1);
 
     if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
     {
@@ -213,38 +209,83 @@ void rr_db_put(RRDBCon **con)
 
 void rr_db_start(RRDBCon *con)
 {
-  static const char * q = "START TRANSACTION";
-  mysql_real_query(&con->con, q, sizeof(q)-1);
+  if (mysql_query(&con->con, "START TRANSACTION") != 0)
+    LOG_ERROR("failed to start the transaction: %s", mysql_error(&con->con));
 }
 
 void rr_db_commit(RRDBCon *con)
 {
-  static const char * q = "COMMIT";
-  mysql_real_query(&con->con, q, sizeof(q)-1);
+  if (mysql_query(&con->con, "COMMIT") != 0)
+    LOG_ERROR("failed to commit the transaction: %s", mysql_error(&con->con));  
 }
 
 void rr_db_rollback(RRDBCon *con)
 {
-  static const char * q = "ROLLBACK";
-  mysql_real_query(&con->con, q, sizeof(q)-1);
+  if (mysql_query(&con->con, "ROLLBACK") != 0)
+    LOG_ERROR("failed to rollback the transaction: %s", mysql_error(&con->con));    
 }
 
-static bool rr_db_is_stringish(enum enum_field_types t)
+static inline enum enum_field_types rr_db_type_to_mysql_type(RRDBType type)
 {
-  switch (t)
+  switch(type)
   {
-    case MYSQL_TYPE_STRING:
-    case MYSQL_TYPE_VAR_STRING:
-    case MYSQL_TYPE_VARCHAR:
-    case MYSQL_TYPE_TINY_BLOB:
-    case MYSQL_TYPE_BLOB:
-    case MYSQL_TYPE_MEDIUM_BLOB:
-    case MYSQL_TYPE_LONG_BLOB:
-    case MYSQL_TYPE_JSON:
+    case RRDB_TYPE_INT8   : return MYSQL_TYPE_TINY    ;
+    case RRDB_TYPE_UINT8  : return MYSQL_TYPE_TINY    ;
+    case RRDB_TYPE_INT    : return MYSQL_TYPE_LONG    ;
+    case RRDB_TYPE_UINT   : return MYSQL_TYPE_LONG    ;
+    case RRDB_TYPE_BIGINT : return MYSQL_TYPE_LONGLONG;
+    case RRDB_TYPE_UBIGINT: return MYSQL_TYPE_LONGLONG;
+    case RRDB_TYPE_FLOAT  : return MYSQL_TYPE_FLOAT   ;
+    case RRDB_TYPE_DOUBLE : return MYSQL_TYPE_DOUBLE  ;
+    case RRDB_TYPE_STRING : return MYSQL_TYPE_STRING  ;
+    case RRDB_TYPE_BINARY : return MYSQL_TYPE_BLOB    ;
+  }
+  assert(false);
+};
+
+static inline bool rr_db_type_is_unsigned(RRDBType type)
+{
+  switch(type)
+  {
+    case RRDB_TYPE_UINT8:
+    case RRDB_TYPE_UINT:
+    case RRDB_TYPE_UBIGINT:
       return true;
+
     default:
       return false;
   }
+}
+
+static inline bool rr_db_type_is_stringish(RRDBType type)
+{
+  switch (type)
+  {
+    case RRDB_TYPE_STRING:
+    case RRDB_TYPE_BINARY:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+static inline unsigned long rr_db_type_length(RRDBType type)
+{
+  switch(type)
+  {
+    case RRDB_TYPE_INT8   : return sizeof(int8_t            );
+    case RRDB_TYPE_UINT8  : return sizeof(uint8_t           );
+    case RRDB_TYPE_INT    : return sizeof(int               );
+    case RRDB_TYPE_UINT   : return sizeof(unsigned          );
+    case RRDB_TYPE_BIGINT : return sizeof(long long         );
+    case RRDB_TYPE_UBIGINT: return sizeof(unsigned long long);
+    case RRDB_TYPE_FLOAT  : return sizeof(float             );
+    case RRDB_TYPE_DOUBLE : return sizeof(double            );
+    case RRDB_TYPE_STRING : return 0;
+    case RRDB_TYPE_BINARY : return 0;
+  }
+  assert(false);
 }
 
 static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
@@ -263,58 +304,63 @@ static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
 
   va_list ap;
   va_start(ap, sql);
-
-  size_t nparams = 0;
+  size_t in_params  = 0;
+  size_t out_params = 0;
+  bool   in         = true;
   for (;;)
-  {
+  {    
     RRDBParam *param = va_arg(ap, RRDBParam *);
+    if (param == RRDB_PARAM_OUT)
+    {
+      in = false;
+      continue;
+    }
+
     if (param == NULL)
       break;
-    nparams++;
-  }
 
+    if (in)
+      ++in_params;
+    else
+      ++out_params;
+  }
   va_end(ap);
 
-  RRDBStmt *rs = (RRDBStmt *)calloc(1, sizeof(*rs));
-  if (!rs)
-  {
+
+  #define RRDB_FIELDS(T, X, ...) \
+    X(T, types   , in_params , __VA_ARGS__); \
+    X(T, bind    , in_params , __VA_ARGS__); \
+    X(T, lengths , in_params , __VA_ARGS__); \
+    X(T, is_null , in_params , __VA_ARGS__); \
+    X(T, rtypes  , out_params, __VA_ARGS__); \
+    X(T, rbind   , out_params, __VA_ARGS__); \
+    X(T, rlengths, out_params, __VA_ARGS__); \
+    X(T, ris_null, out_params, __VA_ARGS__);
+
+  RRDBStmt *rs = NULL;
+  RR_ARENA_ALLOC_INIT(RRDBStmt, RRDB_FIELDS, rs);
+  if (!rs) {
     LOG_ERROR("out of memory");
     mysql_stmt_close(stmt);
     return NULL;
   }
 
-  rs->con     = con;
-  rs->stmt    = stmt;
-  rs->nparams = nparams;
-
-  if (nparams == 0)
-    return rs;
-
-  rs->bind    = (MYSQL_BIND *   )calloc(nparams, sizeof(*rs->bind   ));
-  rs->lengths = (unsigned long *)calloc(nparams, sizeof(*rs->lengths));
-  rs->is_null = (my_bool *      )calloc(nparams, sizeof(*rs->is_null));
-
-  if (!rs->bind || !rs->lengths || !rs->is_null)
-  {
-    LOG_ERROR("out of memory");
-    mysql_stmt_close(stmt);
-    free(rs->bind);
-    free(rs->lengths);
-    free(rs->is_null);
-    free(rs);
-    return NULL;
-  }
+  rs->con        = con;
+  rs->stmt       = stmt;
+  rs->in_params  = in_params;
+  rs->out_params = out_params;
 
   va_start(ap, sql);
-  for (size_t i = 0; i < nparams; i++)
+  for (size_t i = 0; i < in_params; i++)
   {
     RRDBParam *param = va_arg(ap, RRDBParam *);
 
-    rs->bind[i].buffer_type = param->type;
-    rs->bind[i].buffer      = param->bind;
-
-    rs->is_null[i] = param->bind == NULL;
-    rs->bind[i].is_null = param->is_null;
+    rs->types[i]              = param->type;
+    rs->bind[i].buffer_type   = rr_db_type_to_mysql_type(param->type);
+    rs->bind[i].buffer        = param->bind;
+    rs->bind[i].buffer_length = rr_db_type_length(param->type);
+    rs->bind[i].is_null       = param->is_null;
+    rs->is_null[i]            = param->bind == NULL;
 
     if (param->bind == NULL)
     {
@@ -323,13 +369,13 @@ static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
       continue;
     }
 
-    if (rr_db_is_stringish(rs->bind[i].buffer_type))
+    if (rr_db_type_is_stringish(param->type))
     {
       rs->lengths[i] = 0;
       rs->bind[i].buffer_length = rs->lengths[i];
-      rs->bind[i].length = &rs->lengths[i];
+      rs->bind[i].length        = &rs->lengths[i];
 
-      if (param->is_binary)
+      if (param->type == RRDB_TYPE_BINARY)
       {
         rs->bind[i].flags |= BINARY_FLAG;
         rs->lengths[i]     = param->size;
@@ -339,23 +385,62 @@ static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
     {
       rs->bind[i].buffer_length = 0;
       rs->bind[i].length = NULL;
-      rs->bind[i].is_unsigned = param->is_unsigned;
+      rs->bind[i].is_unsigned = rr_db_type_is_unsigned(param->type);
     }
+  }    
+
+  // NULL or RRDB_PARAM_OUT
+  (void)va_arg(ap, void *);
+
+  for(size_t i = 0; i < out_params; ++i)
+  {
+    RRDBParam *param = va_arg(ap, RRDBParam *);
+
+    if (rr_db_type_is_stringish(param->type) && param->size == 0)
+    {
+      LOG_ERROR("out parameter %ld is a variable length buffer and size == 0", i);
+      mysql_stmt_close(stmt);
+      free(rs);
+      return NULL;
+    }
+
+    rs->rtypes[i]              = param->type;
+    rs->rbind[i].buffer_type   = rr_db_type_to_mysql_type(param->type);
+    rs->rbind[i].buffer        = param->bind;
+    rs->rbind[i].buffer_length = rr_db_type_is_stringish(param->type) ? param->size : rr_db_type_length(param->type);
+    rs->rbind[i].is_null       = &rs->ris_null[i];
+    rs->rbind[i].length        = &rs->rlengths[i];
+    rs->rbind[i].is_unsigned   = rr_db_type_is_unsigned(param->type);
+    rs->ris_null[i]            = param->bind == NULL;
+
+    // make room for a null terminator
+    if (param->type == RRDB_TYPE_STRING)
+      --rs->rbind[i].buffer_length;
+
+    if (param->bind == NULL)
+      rs->rbind[i].buffer_length = 0;
   }
 
-  // null terminator
-  (void)va_arg(ap, void *);
+  // NULL
+  if (out_params > 0)
+    (void)va_arg(ap, void *);
+
   va_end(ap);
 
-  if (mysql_stmt_bind_param(stmt, rs->bind) != 0)
+  if (rs->in_params > 0 && mysql_stmt_bind_param(stmt, rs->bind) != 0)
   {
-    LOG_ERROR("bind failed: %s", mysql_error(&con->con));
+    LOG_ERROR("mysql_stmt_bind_param failed: %s", mysql_stmt_error(stmt));
     mysql_stmt_close(stmt);
-    free(rs->bind);
-    free(rs->lengths);
-    free(rs->is_null);
     free(rs);
     return NULL;
+  }
+
+  if (rs->out_params > 0 && mysql_stmt_bind_result(stmt, rs->rbind) != 0)
+  {
+    LOG_ERROR("mysql_stmt_bind_result failed: %s", mysql_stmt_error(stmt));
+    mysql_stmt_close(stmt);
+    free(rs);
+    return false;
   }
 
   return rs;
@@ -363,12 +448,12 @@ static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
 
 bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
 {
-  for(int i = 0; i < stmt->nparams; ++i)
-    if (rr_db_is_stringish(stmt->bind[i].buffer_type))
+  for(int i = 0; i < stmt->in_params; ++i)
+    if (stmt->types[i] == RRDB_TYPE_STRING)
     {
-      const char * str = stmt->bind[i].buffer;
-      if (!(stmt->bind[i].flags & BINARY_FLAG))
-        stmt->lengths[i] = (unsigned long)strlen(str);
+      const char * str = stmt->bind[i].buffer;      
+      stmt->lengths[i] = (unsigned long)strlen(str);
+      stmt->bind[i].buffer_length = stmt->lengths[i];
     }
 
   if (mysql_stmt_execute(stmt->stmt) != 0)
@@ -383,82 +468,28 @@ bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
   return true;
 }
 
-bool rr_db_stmt_bind_results(RRDBStmt *s, ...)
+bool rr_db_stmt_fetch_one(RRDBStmt *stmt)
 {
-  // Free any existing result bindings
-  free(s->rbind);
-  free(s->rlengths);
-  free(s->ris_null);
+  bool ret = false;
+  if(!rr_db_execute_stmt(stmt, NULL))
+    goto err;
 
-  s->rbind    = NULL;
-  s->rlengths = NULL;
-  s->ris_null = NULL;
-  s->nresults = 0;
+  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
+    goto err;
 
-  // Count columns
-  va_list ap;
-  va_start(ap, s);
+  mysql_stmt_free_result(stmt->stmt);
 
-  size_t n = 0;
-  for (;;)
-  {
-    int t = va_arg(ap, int);
-    if (t == MYSQL_TYPE_NULL) break;
-    (void)va_arg(ap, void *);
-    (void)va_arg(ap, unsigned long);
-    n++;
-  }
-  va_end(ap);
-
-  s->nresults = n;
-  if (n == 0)
-    return true;
-
-  s->rbind    = (MYSQL_BIND *   )calloc(n, sizeof(*s->rbind   ));
-  s->rlengths = (unsigned long *)calloc(n, sizeof(*s->rlengths));
-  s->ris_null = (my_bool *      )calloc(n, sizeof(*s->ris_null));
-  if (!s->rbind || !s->rlengths || !s->ris_null)
-  {
-    LOG_ERROR("out of memory");
-    return false;
-  }
-
-  va_start(ap, s);
-  for (size_t i = 0; i < n; i++)
-  {
-    int t = va_arg(ap, int);
-    void *out = va_arg(ap, void *);
-    unsigned long cap = va_arg(ap, unsigned long);
-
-    s->rbind[i].buffer_type = (enum enum_field_types)t;
-    s->rbind[i].buffer      = out;
-
-    s->ris_null[i] = (out == NULL);
-    s->rbind[i].is_null = &s->ris_null[i];
-
-    // always track returned length (esp. for strings/blobs)
-    s->rbind[i].length = &s->rlengths[i];
-
-    if (out == NULL)
+  // null terminate strings
+  for(int i = 0; i < stmt->out_params; ++i)
+    if (stmt->rtypes[i] == RRDB_TYPE_STRING)
     {
-      s->rbind[i].buffer_length = 0;
-      continue;
+      char *str = stmt->rbind[i].buffer;
+      str[stmt->rlengths[i]] = '\0';
     }
 
-    if (rr_db_is_stringish(s->rbind[i].buffer_type))
-      s->rbind[i].buffer_length = cap;
-    else
-      s->rbind[i].buffer_length = cap;
-  }
-  (void)va_arg(ap, int); // terminator
-  va_end(ap);
-
-  if (mysql_stmt_bind_result(s->stmt, s->rbind) != 0)
-  {
-    LOG_ERROR("mysql_stmt_bind_result failed: %s", mysql_stmt_error(s->stmt));
-    return false;
-  }
-  return true;
+  ret = true;
+  err:
+    return ret;
 }
 
 void rr_db_stmt_free(RRDBStmt **rs)
@@ -467,18 +498,7 @@ void rr_db_stmt_free(RRDBStmt **rs)
     return;
 
   if ((*rs)->stmt)
-  {
-    mysql_stmt_free_result((*rs)->stmt);
     mysql_stmt_close((*rs)->stmt);
-  }
-
-  free((*rs)->bind);
-  free((*rs)->lengths);
-  free((*rs)->is_null);
-
-  free((*rs)->rbind);
-  free((*rs)->rlengths);
-  free((*rs)->ris_null);
 
   free(*rs);
   *rs = NULL;
@@ -493,7 +513,7 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
   {
     if (!(st = rr_db_query_stmt(con,
       "INSERT IGNORE INTO registrar (name) VALUES (?)",
-      &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = (char *)name  },
+      &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = (char *)name },
       NULL)))
     {
       LOG_ERROR("prepare failed");
@@ -508,35 +528,21 @@ unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, uns
 
   if (!(st = rr_db_query_stmt(con,
     "SELECT id, serial, last_import FROM registrar WHERE name = ?",
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = (char *)name  },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = (char *)name },
+    RRDB_PARAM_OUT,
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &ret        },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = serial      },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = last_import },
+
     NULL)))
   {
     LOG_ERROR("prepare failed");
     goto err;
   }
 
-  if (!rr_db_stmt_bind_results(st,
-    MYSQL_TYPE_LONG, &ret       , 0,
-    MYSQL_TYPE_LONG, serial     , 0,
-    MYSQL_TYPE_LONG, last_import, 0,
-    MYSQL_TYPE_NULL))
+  if (!rr_db_stmt_fetch_one(st))
   {
-    LOG_ERROR("bind results failed");
-    goto err;
-  }
-
-  if (!rr_db_execute_stmt(st, NULL))
-    goto err;
-
-  if (mysql_stmt_store_result(st->stmt) != 0)
-  {
-    LOG_ERROR("store result failed");
-    goto err;
-  }
-
-  if (mysql_stmt_fetch(st->stmt) == MYSQL_NO_DATA)
-  {
-    LOG_WARN("record not found");
+    LOG_ERROR("failed to fetch");
     goto err;
   }
 
@@ -545,7 +551,7 @@ err:
   return ret;
 }
 
-bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
+bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *in)
 {
   RRDBStmt *st = rr_db_query_stmt(
     con,
@@ -566,11 +572,11 @@ bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
       "org_name = VALUES(org_name), "
       "descr    = VALUES(descr)",
 
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->name     },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_name },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->descr    },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT,   .bind = &in->serial       },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->name         },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_name     },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
     NULL);
 
   if (!st)
@@ -580,7 +586,7 @@ bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind)
   return true;
 }
 
-bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
+bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
 {
   RRDBStmt *st = rr_db_query_stmt(
     con,
@@ -607,14 +613,14 @@ bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
       "netname = VALUES(netname), "
       "descr   = VALUES(descr)",
 
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->startAddr.v4, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG  , .bind = &bind->endAddr  .v4, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_TINY  , .bind = &bind->prefixLen   , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->netname },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->descr   },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->startAddr.v4 },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->endAddr  .v4 },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
     NULL
   );
 
@@ -625,7 +631,7 @@ bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
   return true;
 }
 
-bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind)
+bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
 {
   RRDBStmt *st = rr_db_query_stmt(
     con,
@@ -652,14 +658,15 @@ bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock
       "netname = VALUES(netname), "
       "descr   = VALUES(descr)",
 
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG,   .bind = &bind->serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->org_id_str },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->startAddr.v6, .is_binary   = true, .size = sizeof(bind->startAddr) },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->endAddr  .v6, .is_binary   = true, .size = sizeof(bind->endAddr  ) },
-    &(RRDBParam){ .type = MYSQL_TYPE_TINY  , .bind = &bind->prefixLen   , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->netname },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = &bind->descr   },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->startAddr.v6, .size = sizeof(in->startAddr) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->endAddr  .v6, .size = sizeof(in->endAddr  ) },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
+
     NULL
   );
 
@@ -677,8 +684,8 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   // update the registrar serial & import timestamp
   st = rr_db_query_stmt(con,
     "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
     NULL);
 
   if (!st || !rr_db_execute_stmt(st, NULL))
@@ -691,8 +698,8 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   // delete all old records
   st = rr_db_query_stmt(con,
     "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
     NULL);
 
   if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv4))
@@ -704,8 +711,8 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
 
   st = rr_db_query_stmt(con,
     "DELETE FROM netblock_v6 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
     NULL);
 
   if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv6))
@@ -717,8 +724,8 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
 
   st = rr_db_query_stmt(con,
     "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &registrar_id, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = &serial      , .is_unsigned = true },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
     NULL);    
 
   if (!st || !rr_db_execute_stmt(st, &stats->deletedOrgs))
@@ -773,7 +780,7 @@ bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned seri
   return true;
 };
 
-bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *ipv4Bind)
+bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *in, RRDBIPInfo *out)
 {
   RRDBStmt *st;
 
@@ -796,8 +803,22 @@ bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *ipv4Bind
     "ORDER BY "
       "start_ip DESC "
     "LIMIT 1",
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = ipv4Bind, .is_unsigned = true },
-    &(RRDBParam){ .type = MYSQL_TYPE_LONG, .bind = ipv4Bind, .is_unsigned = true },
+
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = in, .size = sizeof(*in) },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = in, .size = sizeof(*in) },
+
+    RRDB_PARAM_OUT,
+
+    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &out->id                                            },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->registrar_id                                  },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_id_str   , .size = sizeof(out->org_id_str) },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_name     , .size = sizeof(out->org_name  ) },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->start_ip.v4                                   },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->end_ip  .v4                                   },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &out->prefix_len                                    },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->netname     , .size = sizeof(out->netname   ) },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->descr       , .size = sizeof(out->descr     ) },
+
     NULL);
 
   if (!st)
@@ -807,44 +828,7 @@ bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *ipv4Bind
   return true;
 }
 
-bool rr_db_lookup_ipv4(RRDBStmt *stmt, RRDBIPInfo *info)
-{
-  bool ret = false;
-  if (!rr_db_stmt_bind_results(stmt,
-    MYSQL_TYPE_LONGLONG, &info->id          , 0,
-    MYSQL_TYPE_LONG    , &info->registrar_id, 0,
-    MYSQL_TYPE_STRING  , &info->org_id_str  , sizeof(info->org_id_str)-1,
-    MYSQL_TYPE_STRING  , &info->org_name    , sizeof(info->org_name  )-1,
-    MYSQL_TYPE_LONG    , &info->start_ip.v4 , 0,
-    MYSQL_TYPE_LONG    , &info->end_ip  .v4 , 0,
-    MYSQL_TYPE_TINY    , &info->prefix_len  , 0,
-    MYSQL_TYPE_STRING  , info->netname      , sizeof(info->netname)-1,
-    MYSQL_TYPE_STRING  , info->descr        , sizeof(info->descr  )-1,
-    MYSQL_TYPE_NULL))
-  {
-    LOG_ERROR("bind results failed");
-    goto err;
-  }
-
-  if(!rr_db_execute_stmt(stmt, NULL))
-    goto err;
-
-  if (mysql_stmt_store_result(stmt->stmt) != 0)
-  {
-    LOG_ERROR("store result failed");
-    goto err;
-  }
-
-  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
-    goto err;
-
-  mysql_stmt_free_result(stmt->stmt);
-  ret = true;
-  err:
-    return ret;
-}
-
-bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *ipv6Bind)
+bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *in, RRDBIPInfo *out)
 {
   RRDBStmt *st;
 
@@ -867,8 +851,22 @@ bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 
     "ORDER BY "
       "start_ip DESC "
     "LIMIT 1",
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = ipv6Bind, .is_binary = true, .size = sizeof(ipv6Bind) },
-    &(RRDBParam){ .type = MYSQL_TYPE_STRING, .bind = ipv6Bind, .is_binary = true, .size = sizeof(ipv6Bind) },
+
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = in, .size = sizeof(*in) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = in, .size = sizeof(*in) },
+
+    RRDB_PARAM_OUT,
+
+    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &out->id                                             },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->registrar_id                                   },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_id_str  , .size = sizeof(out->org_id_str ) },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_name    , .size = sizeof(out->org_name   ) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &out->start_ip.v6 , .size = sizeof(out->start_ip.v6) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &out->end_ip  .v6 , .size = sizeof(out->start_ip.v4) },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &out->prefix_len                                     },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->netname     , .size = sizeof(out->netname    ) },
+    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->descr       , .size = sizeof(out->descr      ) },
+
     NULL);
 
   if (!st)
@@ -876,41 +874,4 @@ bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 
 
   *stmt = st;
   return true;
-}
-
-bool rr_db_lookup_ipv6(RRDBStmt *stmt, RRDBIPInfo *info)
-{
-  bool ret = false;
-  if (!rr_db_stmt_bind_results(stmt,
-    MYSQL_TYPE_LONGLONG, &info->id          , 0,
-    MYSQL_TYPE_LONG    , &info->registrar_id, 0,
-    MYSQL_TYPE_STRING  , &info->org_id_str  , sizeof(info->org_id_str)-1,
-    MYSQL_TYPE_STRING  , &info->org_name    , sizeof(info->org_name  )-1,
-    MYSQL_TYPE_STRING  , &info->start_ip.v6 , sizeof(info->start_ip.v6),
-    MYSQL_TYPE_STRING  , &info->end_ip  .v6 , sizeof(info->end_ip  .v6),
-    MYSQL_TYPE_TINY    , &info->prefix_len  , 0,
-    MYSQL_TYPE_STRING  , info->netname      , sizeof(info->netname)-1,
-    MYSQL_TYPE_STRING  , info->descr        , sizeof(info->descr  )-1,
-    MYSQL_TYPE_NULL))
-  {
-    LOG_ERROR("bind results failed");
-    goto err;
-  }
-
-  if(!rr_db_execute_stmt(stmt, NULL))
-    goto err;
-
-  if (mysql_stmt_store_result(stmt->stmt) != 0)
-  {
-    LOG_ERROR("store result failed");
-    goto err;
-  }
-
-  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
-    goto err;
-
-  mysql_stmt_free_result(stmt->stmt);
-  ret = true;
-  err:
-    return ret;
 }

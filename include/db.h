@@ -3,9 +3,34 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <unistd.h>
 
 typedef struct RRDBCon  RRDBCon;
 typedef struct RRDBStmt RRDBStmt;
+
+typedef enum RRDBType
+{
+  RRDB_TYPE_INT8,
+  RRDB_TYPE_UINT8,
+  RRDB_TYPE_INT,
+  RRDB_TYPE_UINT,
+  RRDB_TYPE_BIGINT,
+  RRDB_TYPE_UBIGINT,
+  RRDB_TYPE_FLOAT,
+  RRDB_TYPE_DOUBLE,
+  RRDB_TYPE_STRING,
+  RRDB_TYPE_BINARY
+}
+RRDBType;
+
+typedef struct RRDBParam
+{
+  RRDBType type;
+  void    *bind;
+  char    *is_null;
+  size_t   size;
+}
+RRDBParam;
 
 typedef bool (*DBUdataFn)(RRDBCon *con, void **udata);
 
@@ -80,16 +105,15 @@ typedef struct RRDBIPInfo
 }
 RRDBIPInfo;
 
+bool rr_db_stmt_fetch_one(RRDBStmt *stmt);
+
 unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial, unsigned *last_import);
 bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);
 bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
 bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
 bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats);
 
-bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *ipv4Bind);
-bool rr_db_lookup_ipv4(RRDBStmt *stmt, RRDBIPInfo *info);
-
-bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *ipv6Bind);
-bool rr_db_lookup_ipv6(RRDBStmt *stmt, RRDBIPInfo *info);
+bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *in         , RRDBIPInfo *out);
+bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *in, RRDBIPInfo *out);
 
 #endif
