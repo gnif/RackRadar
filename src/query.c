@@ -102,42 +102,60 @@ int rr_query_registrar_insert(
 
 #pragma region lookup_ipv4_by_addr
 DEFAULT_STMT(lookup_ipv4_by_addr,
-  RRDBStmt *st = rr_db_stmt_prepare(con,
-    "SELECT "
-      "a.id, "
-      "a.registrar_id, "
-      "a.org_id_str, "
-      "b.org_name, "
-      "a.start_ip, "
-      "a.end_ip, "
-      "a.prefix_len, "
-      "a.netname, "
-      "a.descr "
-    "FROM "
-      "netblock_v4   AS a "
-      "LEFT JOIN org AS b ON b.id = a.org_id "
-    "WHERE "
-      "start_ip <= ? AND end_ip >= ? "
-    "ORDER BY "
-      "start_ip DESC "
-    "LIMIT 1",
+RRDBStmt *st = rr_db_stmt_prepare(
+  con,
+  "SELECT "
+    "a.id, "
+    "a.registrar_id, "
+    "a.org_id_str, "
+    "b.org_name, "
+    "a.start_ip, "
+    "a.end_ip, "
+    "a.prefix_len, "
+    "a.netname, "
+    "a.descr "
+  "FROM "
+    /* Guard: only proceed if IP is inside the union coverage */
+    "netblock_v4_union u "
+    "JOIN ( "
+      "SELECT end_ip "
+      "FROM netblock_v4_union "
+      "WHERE start_ip <= ? "
+      "ORDER BY start_ip DESC "
+      "LIMIT 1 "
+    ") g ON g.end_ip >= ? "
+    /* Real lookup (unchanged) */
+    "JOIN ( "
+      "SELECT id "
+      "FROM netblock_v4 "
+      "WHERE start_ip <= ? AND end_ip >= ? "
+      "ORDER BY start_ip DESC "
+      "LIMIT 1 "
+    ") x ON 1=1 "
+    "JOIN netblock_v4 AS a ON a.id = x.id "
+    "LEFT JOIN org AS b ON b.id = a.org_id",
 
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
+  /* union guard inputs */
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
 
-    RRDB_PARAM_OUT,
+  /* real lookup inputs */
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
 
-    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                                  },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                        },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_id_str   , .size = sizeof(this->out.org_id_str) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_name     , .size = sizeof(this->out.org_name  ) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.start_ip.v4                                         },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.end_ip  .v4                                         },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &this->out.prefix_len                                          },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.netname     , .size = sizeof(this->out.netname    ) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.descr       , .size = sizeof(this->out.descr      ) },
+  RRDB_PARAM_OUT,
 
-    NULL);
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                                  },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                        },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_id_str   , .size = sizeof(this->out.org_id_str) },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_name     , .size = sizeof(this->out.org_name  ) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.start_ip.v4                                         },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.end_ip  .v4                                         },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &this->out.prefix_len                                          },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.netname     , .size = sizeof(this->out.netname    ) },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.descr       , .size = sizeof(this->out.descr      ) },
+
+  NULL);
 )
 
 int rr_query_netblockv4_by_ip(
@@ -159,7 +177,8 @@ int rr_query_netblockv4_by_ip(
 
 #pragma region lookup_ipv6_by_addr
 DEFAULT_STMT(lookup_ipv6_by_addr,
-  RRDBStmt *st = rr_db_stmt_prepare(con,
+  RRDBStmt *st = rr_db_stmt_prepare(
+    con,
     "SELECT "
       "a.id, "
       "a.registrar_id, "
@@ -171,25 +190,39 @@ DEFAULT_STMT(lookup_ipv6_by_addr,
       "a.netname, "
       "a.descr "
     "FROM "
-      "netblock_v6   AS a "
-      "LEFT JOIN org AS b ON b.id = a.org_id "
-    "WHERE "
-      "start_ip <= ? AND end_ip >= ? "
-    "ORDER BY "
-      "start_ip DESC "
-    "LIMIT 1",
+      "(SELECT end_ip "
+      " FROM netblock_v6_union "
+      " WHERE start_ip <= ? "
+      " ORDER BY start_ip DESC "
+      " LIMIT 1) g "
+    "JOIN ("
+      "SELECT id "
+      "FROM netblock_v6 FORCE INDEX (idx_start_end) "
+      "WHERE start_ip <= ? AND end_ip >= ? "
+      "ORDER BY start_ip DESC "
+      "LIMIT 1"
+    ") x ON g.end_ip >= ? "
+    "JOIN netblock_v6 AS a ON a.id = x.id "
+    "LEFT JOIN org AS b ON b.id = a.org_id",
 
+    /* union guard: start_ip <= ip */
     &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in_ipv6, .size = sizeof(this->in_ipv6) },
+
+    /* real lookup: start_ip <= ip AND end_ip >= ip */
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in_ipv6, .size = sizeof(this->in_ipv6) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in_ipv6, .size = sizeof(this->in_ipv6) },
+
+    /* guard check: g.end_ip >= ip */
     &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in_ipv6, .size = sizeof(this->in_ipv6) },
 
     RRDB_PARAM_OUT,
 
-    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                             },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                   },
+    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                                  },
+    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                        },
     &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_id_str  , .size = sizeof(this->out.org_id_str ) },
     &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_name    , .size = sizeof(this->out.org_name   ) },
     &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->out.start_ip.v6 , .size = sizeof(this->out.start_ip.v6) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->out.end_ip  .v6 , .size = sizeof(this->out.start_ip.v4) },
+    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->out.end_ip  .v6 , .size = sizeof(this->out.end_ip.v6  ) },
     &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &this->out.prefix_len                                          },
     &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.netname     , .size = sizeof(this->out.netname    ) },
     &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.descr       , .size = sizeof(this->out.descr      ) },
@@ -481,3 +514,84 @@ bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned s
 
   return true;
 };
+
+bool rr_query_build_unions(RRDBCon *con)
+{
+  RRDBStmt *st;
+  LOG_INFO("building unions");
+  st = rr_db_stmt_prepare(con,
+    "TRUNCATE TABLE netblock_v4_union",
+    NULL);
+  if (!st || !rr_db_stmt_execute(st, NULL))
+  {
+    rr_db_stmt_free(&st);
+    return false;
+  }
+  rr_db_stmt_free(&st);
+
+  st = rr_db_stmt_prepare(con,
+    "INSERT INTO netblock_v4_union (start_ip, end_ip) "
+    "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
+    "FROM ( "
+      "SELECT "
+        "t.start_ip, "
+        "(@grp := @grp + (t.start_ip > @end)) AS grp, "
+        "(@end := IF(t.start_ip > @end, t.end_ip, GREATEST(@end, t.end_ip))) AS running_end "
+      "FROM ( "
+        "SELECT start_ip, end_ip "
+        "FROM netblock_v4 FORCE INDEX (idx_start_end) "
+        "ORDER BY start_ip, end_ip "
+      ") t "
+      "CROSS JOIN (SELECT @grp := -1, @end := -1) vars "
+    ") x "
+    "GROUP BY grp",
+    NULL);
+  if (!st || !rr_db_stmt_execute(st, NULL))
+  {
+    rr_db_stmt_free(&st);
+    return false;
+  }
+  rr_db_stmt_free(&st);
+
+  st = rr_db_stmt_prepare(con,
+    "TRUNCATE TABLE netblock_v6_union",
+    NULL);
+  if (!st || !rr_db_stmt_execute(st, NULL))
+  {
+    rr_db_stmt_free(&st);
+    return false;
+  }
+  rr_db_stmt_free(&st);
+
+  st = rr_db_stmt_prepare(con,
+    "INSERT INTO netblock_v6_union (start_ip, end_ip) "
+    "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
+    "FROM ( "
+      "SELECT "
+        "t.start_ip, "
+        "(@grp := @grp + (t.start_ip > CAST(@end AS BINARY(16)))) AS grp, "
+        "(@end := IF( "
+          "t.start_ip > CAST(@end AS BINARY(16)), "
+          "t.end_ip, "
+          "IF(t.end_ip > CAST(@end AS BINARY(16)), t.end_ip, CAST(@end AS BINARY(16))) "
+        ")) AS running_end "
+      "FROM ( "
+        "SELECT start_ip, end_ip "
+        "FROM netblock_v6 FORCE INDEX (idx_start_end) "
+        "ORDER BY start_ip, end_ip "
+      ") t "
+      "CROSS JOIN ( "
+        "SELECT @grp := -1, @end := CAST(UNHEX('00000000000000000000000000000000') AS BINARY(16)) "
+      ") vars "
+    ") x "
+    "GROUP BY grp",
+    NULL);
+
+  if (!st || !rr_db_stmt_execute(st, NULL)) {
+    rr_db_stmt_free(&st);
+    return false;
+  }
+  rr_db_stmt_free(&st);
+  LOG_INFO("finished");
+  return true;
+}

@@ -142,6 +142,10 @@ static void add_netblock(struct ProcessState *state)
     pair->cidr = rr_ipv4_to_cidr(pair->start.v4, pair->end.v4);
   }
 
+  // dont add netblocks that cover the entire range
+  if (pair->cidr == 0)
+    return;
+
   ++state->nbAddrs;
 }
 

@@ -64,9 +64,12 @@ static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
 
     case REGISTRAR_APNIC:
       return
-        (strncmp(state->x.inetnum.netname, "IANA-NETBLOCK-" , 14) == 0) ||
-        (strncmp(state->x.inetnum.netname, "IANA-BLOCK"     , 10) == 0) ||
-        (strncmp(state->x.inetnum.netname, "ARIN-CIDR-BLOCK", 15) == 0);
+        (strncmp(state->x.inetnum.netname, "IANA-NETBLOCK-"   , 14) == 0) ||
+        (strcmp (state->x.inetnum.netname, "IANA-BLOCK"        ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "ARIN-CIDR-BLOCK"   ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "RIPE-CIDR-BLOCK"   ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "LACNIC-CIDR-BLOCK" ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "AFRINIC-CIDR-BLOCK") == 0);
 
     case REGISTRAR_GENERIC:
       return false;
@@ -109,11 +112,6 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           state->x.inetnum.registrar_id = state->registrar_id;
           state->x.inetnum.serial       = state->serial;
 
-          // calculate the cidr prefix len
-          state->x.inetnum.prefixLen = rr_ipv4_to_cidr(
-            state->x.inetnum.startAddr.v4,
-            state->x.inetnum.endAddr  .v4);
-
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
           if (!rr_db_stmt_execute(state->stmtNetBlockV4, &ra))
             return false;
@@ -130,12 +128,6 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         
           state->x.inetnum.registrar_id = state->registrar_id;
           state->x.inetnum.serial       = state->serial;
-
-          // calculate the end of the segment
-          rr_calc_ipv6_cidr_end(
-            &state->x.inetnum.startAddr.v6,
-             state->x.inetnum.prefixLen,
-            &state->x.inetnum.endAddr  .v6);
 
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
           if (!rr_db_stmt_execute(state->stmtNetBlockV6, &ra))
@@ -225,11 +217,27 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         static_assert(sizeof(state->x.inetnum.startAddr.v4) == sizeof(struct in_addr));
         if ((inet_pton(AF_INET, start, (void *)&state->x.inetnum.startAddr.v4) != 1) ||
             (inet_pton(AF_INET, end  , (void *)&state->x.inetnum.endAddr  .v4) != 1))
+        {
           state->recordType = RECORD_TYPE_IGNORE;
+          return true;
+        }
 
         // convert to host order
         state->x.inetnum.startAddr.v4 = ntohl(state->x.inetnum.startAddr.v4);
         state->x.inetnum.endAddr  .v4 = ntohl(state->x.inetnum.endAddr  .v4);
+
+        // calculate the cidr prefix len
+        state->x.inetnum.prefixLen = rr_ipv4_to_cidr(
+          state->x.inetnum.startAddr.v4,
+          state->x.inetnum.endAddr  .v4);
+
+        // dont insert blocks that cover the entire range
+        if (state->x.inetnum.prefixLen == 0)
+        {
+          state->recordType = RECORD_TYPE_IGNORE;
+          return true;
+        }
+
         return true;
       }
 
@@ -252,8 +260,17 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         }
 
         state->x.inetnum.prefixLen = strtoul(prefixLen, NULL, 10);
-        if (state->x.inetnum.prefixLen > 64)
+        if (state->x.inetnum.prefixLen == 0 || state->x.inetnum.prefixLen > 64)
+        {
           state->recordType = RECORD_TYPE_IGNORE;
+          return true;
+        }
+
+        // calculate the end of the segment
+        rr_calc_ipv6_cidr_end(
+          &state->x.inetnum.startAddr.v6,
+            state->x.inetnum.prefixLen,
+          &state->x.inetnum.endAddr  .v6);
 
         return true;
       }

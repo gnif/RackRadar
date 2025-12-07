@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   KEY idx_serial     (serial),
   KEY idx_start      (start_ip),
   KEY idx_start_end  (start_ip, end_ip),
+  KEY idx_end_start  (end_ip  , start_ip),
   KEY idx_registrar  (registrar_id),
   KEY idx_org_id_str (org_id_str),
 
@@ -73,6 +74,18 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   CONSTRAINT fk_nb_registrar
     FOREIGN KEY (registrar_id) REFERENCES registrar(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
+)
+ENGINE          = InnoDB
+DEFAULT CHARSET = utf8mb4
+COLLATE         = utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS netblock_v4_union
+(
+  start_ip INT UNSIGNED NOT NULL,
+  end_ip   INT UNSIGNED NOT NULL,
+  PRIMARY KEY (start_ip),
+  KEY idx_end (end_ip),
+  CONSTRAINT chk_union CHECK (start_ip <= end_ip)
 )
 ENGINE          = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -94,8 +107,8 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   PRIMARY KEY(id),
 
   KEY idx_serial     (serial),
-  KEY idx_start      (start_ip),
   KEY idx_start_end  (start_ip, end_ip),
+  KEY idx_end_start  (end_ip  , start_ip),
   KEY idx_registrar  (registrar_id),
   KEY idx_org        (org_id),
   KEY idx_org_id_str (org_id_str),
@@ -112,6 +125,18 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   CONSTRAINT fk_nb6_org
     FOREIGN KEY (org_id) REFERENCES org(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
+)
+ENGINE          = InnoDB
+DEFAULT CHARSET = utf8mb4
+COLLATE         = utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS netblock_v6_union
+(
+  start_ip BINARY(16) NOT NULL,
+  end_ip   BINARY(16) NOT NULL,
+  PRIMARY KEY (start_ip),
+  KEY idx_end (end_ip),
+  CONSTRAINT chk_union CHECK (start_ip <= end_ip)
 )
 ENGINE          = InnoDB
 DEFAULT CHARSET = utf8mb4

@@ -17,6 +17,8 @@ bool running = true;
 RRDownload *dl = NULL;
 static void * import_thread(void *)
 {
+  bool rebuild_unions = false;
+
   while(running)
   {
     RRDBCon *con;
@@ -109,15 +111,16 @@ static void * import_thread(void *)
       const char *resultStr;
       if (success)
       {
-        resultStr = "succeeded";
         if (!rr_db_commit(con))
           goto put_next;
+        resultStr = "succeeded";
+        rebuild_unions = true;
       }
       else
       {
-        resultStr = "failed";
         if (!rr_db_rollback(con))
           goto put_next;
+        resultStr = "failed";
       }
       fclose(fp);      
 
