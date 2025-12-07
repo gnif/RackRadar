@@ -294,22 +294,34 @@ void *rr_db_get_con_udata(RRDBCon *con)
   return con->udata;
 }
 
-void rr_db_start(RRDBCon *con)
+bool rr_db_start(RRDBCon *con)
 {
   if (mysql_query(&con->con, "START TRANSACTION") != 0)
+  {  
     LOG_ERROR("failed to start the transaction: %s", mysql_error(&con->con));
+    return false;
+  }
+  return true;
 }
 
-void rr_db_commit(RRDBCon *con)
+bool rr_db_commit(RRDBCon *con)
 {
   if (mysql_query(&con->con, "COMMIT") != 0)
+  {
     LOG_ERROR("failed to commit the transaction: %s", mysql_error(&con->con));  
+    return false;
+  }
+  return true;
 }
 
-void rr_db_rollback(RRDBCon *con)
+bool rr_db_rollback(RRDBCon *con)
 {
   if (mysql_query(&con->con, "ROLLBACK") != 0)
+  {
     LOG_ERROR("failed to rollback the transaction: %s", mysql_error(&con->con));    
+    return false;
+  }
+  return true;
 }
 
 RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
@@ -497,14 +509,17 @@ unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt)
   return mysql_stmt_insert_id(stmt->stmt);
 }
 
-bool rr_db_stmt_fetch_one(RRDBStmt *stmt)
+int rr_db_stmt_fetch_one(RRDBStmt *stmt)
 {
-  bool ret = false;
+  int ret = -1;
   if(!rr_db_stmt_execute(stmt, NULL))
     goto err;
 
   if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
+  {
+    ret = 0;
     goto err;
+  }
 
   mysql_stmt_free_result(stmt->stmt);
 

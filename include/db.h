@@ -44,14 +44,14 @@ void rr_db_put(RRDBCon **con);
 
 void *rr_db_get_con_udata(RRDBCon *con);
 
-void rr_db_start   (RRDBCon *con);
-void rr_db_commit  (RRDBCon *con);
-void rr_db_rollback(RRDBCon *con);
+bool rr_db_start   (RRDBCon *con);
+bool rr_db_commit  (RRDBCon *con);
+bool rr_db_rollback(RRDBCon *con);
 
 RRDBStmt          *rr_db_stmt_prepare  (RRDBCon *con, const char *sql, ...);
 bool               rr_db_stmt_execute  (RRDBStmt *stmt, unsigned long long *affectedRows);
 unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt);
-bool               rr_db_stmt_fetch_one(RRDBStmt *stmt);
+int                rr_db_stmt_fetch_one(RRDBStmt *stmt);
 void               rr_db_stmt_free     (RRDBStmt **rs);
 
 #endif

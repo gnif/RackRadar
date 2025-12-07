@@ -53,7 +53,7 @@ DEFAULT_STMT(registrar_by_name,
     NULL);
 );
 
-bool rr_query_registrar_by_name(
+int rr_query_registrar_by_name(
   RRDBCon *con,
   const char *in_name,
   unsigned *out_registrar_id,
@@ -63,14 +63,14 @@ bool rr_query_registrar_by_name(
   DBQueryData *qd = rr_db_get_con_udata(con);
 
   strcpy(qd->registrar_by_name.in_name, in_name);
-  if (rr_db_stmt_fetch_one(qd->registrar_by_name.stmt))
-  {
-    *out_registrar_id = qd->registrar_by_name.out.id;
-    *out_serial       = qd->registrar_by_name.out.serial;
-    *out_last_import  = qd->registrar_by_name.out.last_import;
-    return true;
-  }
-  return false;
+  int rc = rr_db_stmt_fetch_one(qd->registrar_by_name.stmt);
+  if (rc < 1)
+    return rc;
+
+  *out_registrar_id = qd->registrar_by_name.out.id;
+  *out_serial       = qd->registrar_by_name.out.serial;
+  *out_last_import  = qd->registrar_by_name.out.last_import;
+  return 1;
 }
 #pragma endregion
 
@@ -83,7 +83,7 @@ DEFAULT_STMT(registrar_insert,
     NULL);
 );
 
-bool rr_query_registrar_insert(
+int rr_query_registrar_insert(
   RRDBCon *con,
   const char *in_name,
   unsigned *out_registrar_id)
@@ -91,11 +91,12 @@ bool rr_query_registrar_insert(
   DBQueryData *qd = rr_db_get_con_udata(con);
 
   strcpy(qd->registrar_insert.in_name, in_name);
-  if (!rr_db_stmt_execute(qd->registrar_insert.stmt, NULL))
-    return false;
+  int rc = rr_db_stmt_execute(qd->registrar_insert.stmt, NULL);
+  if (rc < 1)
+    return rc;
 
   *out_registrar_id = rr_db_stmt_insert_id(qd->registrar_insert.stmt);
-  return true;
+  return 1;
 }
 #pragma endregion
 
@@ -139,7 +140,7 @@ DEFAULT_STMT(lookup_ipv4_by_addr,
     NULL);
 )
 
-bool rr_query_netblockv4_by_ip(
+int rr_query_netblockv4_by_ip(
   RRDBCon     *con,
   uint32_t     in_ipv4,
   RRDBIPInfo  *out)
@@ -147,11 +148,12 @@ bool rr_query_netblockv4_by_ip(
   DBQueryData *qd = rr_db_get_con_udata(con);
 
   qd->lookup_ipv4_by_addr.in_ipv4 = in_ipv4;
-  if (!rr_db_stmt_fetch_one(qd->lookup_ipv4_by_addr.stmt))
-    return false;
+  int rc = rr_db_stmt_fetch_one(qd->lookup_ipv4_by_addr.stmt);
+  if (rc < 1)
+    return rc;
 
   memcpy(out, &qd->lookup_ipv4_by_addr.out, sizeof(*out));
-  return true;
+  return 1;
 }
 #pragma endregion
 
@@ -195,7 +197,7 @@ DEFAULT_STMT(lookup_ipv6_by_addr,
     NULL);
 )
 
-bool rr_query_netblockv6_by_ip(
+int rr_query_netblockv6_by_ip(
   RRDBCon           *con,
   unsigned __int128  in_ipv6,
   RRDBIPInfo        *out)
