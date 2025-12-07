@@ -116,6 +116,48 @@ static inline unsigned long rr_db_type_length(RRDBType type)
   assert(false);
 }
 
+bool rr_db_init_con(RRDBCon *con)
+{
+  if (!mysql_init(&con->con))
+  {
+    LOG_ERROR("mysql_init failed for connection %u", con->id);
+    rr_db_deinit();
+    return false;
+  }
+
+  my_bool reconnect = false;
+  mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4" );    
+  mysql_options(&con->con, MYSQL_OPT_RECONNECT   , &reconnect);
+  
+  if (!mysql_real_connect(
+    &con->con,
+    g_config.database.port != 0 ? g_config.database.host : NULL,
+    g_config.database.user,
+    g_config.database.pass,
+    g_config.database.name,
+    g_config.database.port,
+    g_config.database.port == 0 ? g_config.database.host : NULL,
+    0)
+  )
+  {
+    LOG_ERROR("%s", mysql_error(&con->con));
+    rr_db_deinit();
+    return false;
+  };
+
+  mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
+  mysql_autocommit(&con->con, 1);
+
+  if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
+  {
+    LOG_ERROR("udataInitFn returned false");
+    rr_db_deinit();
+    return false;
+  }
+
+  return true;
+}
+
 static void * rr_db_thread(void *opaque)
 {
   LOG_INFO("db thread started");
@@ -132,7 +174,20 @@ static void * rr_db_thread(void *opaque)
         if (con->in_use)
           continue;
 
-        mysql_ping(&con->con);
+        if (mysql_ping(&con->con) != 0)
+        {
+          LOG_WARN("connection %d ping failed, reconnecting", con->id);
+          if (db.udataDeInitFn)
+            db.udataDeInitFn(con, &con->udata);
+
+          mysql_close(&con->con);
+          if (!rr_db_init_con(con))
+          {
+            LOG_ERROR("failed to reconnect %d", con->id);
+            continue;            
+          }
+          LOG_INFO("reconnected %d", con->id);
+        }
       }
       pthread_mutex_unlock(&db.pool_lock);
     }
@@ -164,44 +219,12 @@ bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
   {
     RRDBCon *con = db.pool + i;
     con->id = i;
-
-    if (!mysql_init(&con->con))
+    if (!rr_db_init_con(con))
     {
-      LOG_ERROR("mysql_init failed for connection %lu", i);
       rr_db_deinit();
       return false;
     }
-
-    my_bool reconnect = true;
-    mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4" );    
-    mysql_options(&con->con, MYSQL_OPT_RECONNECT   , &reconnect);
-    
-    if (!mysql_real_connect(
-      &con->con,
-      g_config.database.port != 0 ? g_config.database.host : NULL,
-      g_config.database.user,
-      g_config.database.pass,
-      g_config.database.name,
-      g_config.database.port,
-      g_config.database.port == 0 ? g_config.database.host : NULL,
-      0)
-    )
-    {
-      LOG_ERROR("%s", mysql_error(&con->con));
-      rr_db_deinit();
-      return false;
-    };
     ++db.sz_pool;
-
-    mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
-    mysql_autocommit(&con->con, 1);
-
-    if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
-    {
-      LOG_ERROR("udataInitFn returned false");
-      rr_db_deinit();
-      return false;
-    }
   }
 
   db.running = true;
