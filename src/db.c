@@ -4,6 +4,7 @@
 #include "util.h"
 
 #include <mysql.h>
+#include <errmsg.h>
 #include <string.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -13,6 +14,7 @@ struct RRDBCon
 {
   unsigned id;
   bool     in_use;
+  bool     is_faulty;
   MYSQL    con;
   void    *udata;
 };
@@ -116,12 +118,27 @@ static inline unsigned long rr_db_type_length(RRDBType type)
   assert(false);
 }
 
+static inline int rr_mysql_needs_reconnect(unsigned err)
+{
+  switch (err)
+  {
+    case CR_SERVER_GONE_ERROR:  // 2006
+    case CR_SERVER_LOST:        // 2013
+#ifdef CR_SERVER_LOST_EXTENDED
+    case CR_SERVER_LOST_EXTENDED: // 2055 (MariaDB Connector/C)
+#endif
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 bool rr_db_init_con(RRDBCon *con)
 {
   if (!mysql_init(&con->con))
   {
+    con->is_faulty = true;
     LOG_ERROR("mysql_init failed for connection %u", con->id);
-    rr_db_deinit();
     return false;
   }
 
@@ -140,8 +157,8 @@ bool rr_db_init_con(RRDBCon *con)
     0)
   )
   {
+    con->is_faulty = true;
     LOG_ERROR("%s", mysql_error(&con->con));
-    rr_db_deinit();
     return false;
   };
 
@@ -150,11 +167,13 @@ bool rr_db_init_con(RRDBCon *con)
 
   if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
   {
+    con->is_faulty = true;
     LOG_ERROR("udataInitFn returned false");
-    rr_db_deinit();
     return false;
   }
 
+  con->in_use    = false;
+  con->is_faulty = false;
   return true;
 }
 
@@ -174,17 +193,17 @@ static void * rr_db_thread(void *opaque)
         if (con->in_use)
           continue;
 
-        if (mysql_ping(&con->con) != 0)
+        if (con->is_faulty || mysql_ping(&con->con) != 0)
         {
-          LOG_WARN("connection %d ping failed, reconnecting", con->id);
+          LOG_WARN("connection %u failed, reconnecting", con->id);
           if (db.udataDeInitFn)
             db.udataDeInitFn(con, &con->udata);
 
           mysql_close(&con->con);
           if (!rr_db_init_con(con))
           {
-            LOG_ERROR("failed to reconnect %d", con->id);
-            continue;            
+            LOG_ERROR("failed to reconnect %u", con->id);
+            continue;
           }
           LOG_INFO("reconnected %d", con->id);
         }
@@ -268,14 +287,14 @@ bool rr_db_get(RRDBCon **out)
   for(size_t i = 0; i < db.sz_pool; ++i)
   {
     RRDBCon *con = db.pool + i;
-    if (!con->in_use)
-    {
-      con->in_use = true;
-      pthread_mutex_unlock(&db.pool_lock);
+    if (con->in_use || con->is_faulty)
+      continue;
 
-      *out = con;
-      return true;
-    }
+    con->in_use = true;
+    pthread_mutex_unlock(&db.pool_lock);
+
+    *out = con;
+    return true;
   }
   pthread_mutex_unlock(&db.pool_lock);
   return false;
@@ -298,7 +317,8 @@ bool rr_db_start(RRDBCon *con)
 {
   if (mysql_query(&con->con, "START TRANSACTION") != 0)
   {  
-    LOG_ERROR("failed to start the transaction: %s", mysql_error(&con->con));
+    con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
+    LOG_ERROR("failed to start the transaction (%u): %s", con->id, mysql_error(&con->con));
     return false;
   }
   return true;
@@ -308,7 +328,8 @@ bool rr_db_commit(RRDBCon *con)
 {
   if (mysql_query(&con->con, "COMMIT") != 0)
   {
-    LOG_ERROR("failed to commit the transaction: %s", mysql_error(&con->con));  
+    con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
+    LOG_ERROR("failed to commit the transaction (%u): %s", con->id, mysql_error(&con->con));
     return false;
   }
   return true;
@@ -318,7 +339,8 @@ bool rr_db_rollback(RRDBCon *con)
 {
   if (mysql_query(&con->con, "ROLLBACK") != 0)
   {
-    LOG_ERROR("failed to rollback the transaction: %s", mysql_error(&con->con));    
+    con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
+    LOG_ERROR("failed to rollback the transaction (%u): %s", con->id, mysql_error(&con->con));
     return false;
   }
   return true;
@@ -328,10 +350,14 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
 {
   MYSQL_STMT *stmt = mysql_stmt_init(&con->con);
   if (!stmt)
+  {
+    con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
     return NULL;
+  }
 
   if (mysql_stmt_prepare(stmt, sql, (unsigned long)strlen(sql)) != 0)
   {
+    con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
     LOG_ERROR("prepare stmt failed: %s", mysql_error(&con->con));
     LOG_ERROR("%s", sql);
     mysql_stmt_close(stmt);
@@ -494,7 +520,8 @@ bool rr_db_stmt_execute(RRDBStmt *stmt, unsigned long long *affectedRows)
 
   if (mysql_stmt_execute(stmt->stmt) != 0)
   {
-    LOG_ERROR("execute failed: %s", mysql_stmt_error(stmt->stmt));
+    stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+    LOG_ERROR("execute failed (%u): %s", stmt->con->id, mysql_stmt_error(stmt->stmt));
     return false;
   }
 
@@ -515,13 +542,25 @@ int rr_db_stmt_fetch_one(RRDBStmt *stmt)
   if(!rr_db_stmt_execute(stmt, NULL))
     goto err;
 
-  if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
+  int rc;
+  if ((rc = mysql_stmt_fetch(stmt->stmt)) == 1)
+  {
+    stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+    goto err;
+  }
+
+  if (!mysql_stmt_free_result(stmt->stmt) && mysql_stmt_errno(stmt->stmt) != 0)
+  {
+    LOG_ERROR("mysql_stmt_free_result: %s", mysql_stmt_error(stmt->stmt));
+    stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+    goto err;
+  }
+
+  if (rc == MYSQL_NO_DATA)
   {
     ret = 0;
     goto err;
   }
-
-  mysql_stmt_free_result(stmt->stmt);
 
   // null terminate strings
   for(int i = 0; i < stmt->out_params; ++i)
@@ -541,8 +580,8 @@ void rr_db_stmt_free(RRDBStmt **rs)
   if (!rs || !*rs)
     return;
 
-  if ((*rs)->stmt)
-    mysql_stmt_close((*rs)->stmt);
+  if ((*rs)->stmt && !mysql_stmt_close((*rs)->stmt))
+    (*rs)->con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&(*rs)->con->con));
 
   free(*rs);
   *rs = NULL;

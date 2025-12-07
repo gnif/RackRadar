@@ -486,8 +486,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
     }
   }
 
-  rr_query_finalize_registrar(con, registrar_id, new_serial, &state.stats);
-  ret = true;
+  ret = rr_query_finalize_registrar(con, registrar_id, new_serial, &state.stats);
 
 err_xml_parser:
   XML_ParserFree(state.p);
