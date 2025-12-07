@@ -291,7 +291,11 @@ static void xml_on_end(void *userData, const char *name)
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
           rr_sanatize(state->x.org.descr, sizeof(state->x.org.descr));
-          rr_db_stmt_execute(state->stmtOrg, &ar);
+          if (!rr_db_stmt_execute(state->stmtOrg, &ar))
+          {
+            XML_StopParser(state->p, XML_FALSE);
+            return;
+          }
           if (ar == 1)
             ++state->stats.newOrgs;
           break;
@@ -326,7 +330,11 @@ static void xml_on_end(void *userData, const char *name)
             state->x.inetnum.startAddr = pair->start;
             state->x.inetnum.endAddr   = pair->end;
             state->x.inetnum.prefixLen = pair->cidr;
-            rr_db_stmt_execute(stmt, &ar);
+            if (!rr_db_stmt_execute(stmt, &ar))
+            {
+              XML_StopParser(state->p, XML_FALSE);
+              return;
+            }
             if (ar == 1)
               ++(*count);
           }
