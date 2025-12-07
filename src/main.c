@@ -138,10 +138,9 @@ static enum MHD_Result httpd_handler(void * cls,
 
   if (strncmp(url, "/ip/", 4) == 0)
   {
-    RRDBCon          *con;
-    DBQueryData      *qd;
-    RRDBIPInfo       *info;
-    char   ipstring[64];
+    RRDBCon   *con;
+    RRDBIPInfo info;
+    char       ipstring[64];
 
     const char * ip = url + 4;
     if(strstr(ip, ":"))
@@ -158,21 +157,16 @@ static enum MHD_Result httpd_handler(void * cls,
       if (!rr_db_get(&con))
         return MHD_NO;;        
 
-      qd = rr_db_get_con_udata(con);
-
-      qd->netblock_v6.by_addr.in_ipv6 = ipv6;
-      if (!rr_db_stmt_fetch_one(qd->netblock_v6.by_addr.stmt))
+      if (!rr_query_netblockv6_by_ip(con, ipv6, &info))
       {
         rr_db_put(&con);
         res = MHD_create_response_empty(MHD_RF_NONE); 
         MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
         MHD_destroy_response(res);
-        return MHD_YES;
+        return MHD_YES;      
       }
 
-      inet_ntop(AF_INET6, &qd->netblock_v6.by_addr.out.start_ip.v6,
-        ipstring, sizeof(ipstring));
-      info = &qd->netblock_v6.by_addr.out;        
+      inet_ntop(AF_INET6, &info.start_ip.v6, ipstring, sizeof(ipstring));
     }
     else
     {
@@ -188,21 +182,17 @@ static enum MHD_Result httpd_handler(void * cls,
       if (!rr_db_get(&con))
         return MHD_NO;;
 
-      qd = rr_db_get_con_udata(con);
-
-      qd->netblock_v4.by_addr.in_ipv4 = ipv4;
-      if (!rr_db_stmt_fetch_one(qd->netblock_v4.by_addr.stmt))
+      if (!rr_query_netblockv4_by_ip(con, ipv4, &info))
       {
         rr_db_put(&con);
         res = MHD_create_response_empty(MHD_RF_NONE); 
         MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, res);
         MHD_destroy_response(res);
-        return MHD_YES;
+        return MHD_YES;      
       }
 
-      uint32_t netip = htonl(qd->netblock_v4.by_addr.out.start_ip.v4);
+      uint32_t netip = htonl(info.start_ip.v4);
       inet_ntop(AF_INET, &netip, ipstring, sizeof(ipstring));
-      info = &qd->netblock_v4.by_addr.out;
     }
 
     char * buffer = malloc(16384);
@@ -213,11 +203,11 @@ static enum MHD_Result httpd_handler(void * cls,
       "org_name: %s\n"
       "descr   : %s\n",
       ipstring,
-      info->prefix_len,
-      info->netname,
-      info->org_id_str,
-      info->org_name,
-      info->descr
+      info.prefix_len,
+      info.netname,
+      info.org_id_str,
+      info.org_name,
+      info.descr
     );
     rr_db_put(&con);
 

@@ -2,6 +2,21 @@
 #define _H_RR_QUERY_
 
 #include "db.h"
+#include <stdint.h>
+
+typedef struct RRDBStatistics
+{
+  unsigned long long
+    newOrgs,
+    deletedOrgs,
+
+    newIPv4,
+    deletedIPv4,
+
+    newIPv6,
+    deletedIPv6;
+}
+RRDBStatistics;
 
 typedef struct RRDBRegistrar
 {
@@ -42,20 +57,6 @@ typedef struct RRDBNetBlock
 }
 RRDBNetBlock;
 
-typedef struct RRDBStatistics
-{
-  unsigned long long
-    newOrgs,
-    deletedOrgs,
-
-    newIPv4,
-    deletedIPv4,
-
-    newIPv6,
-    deletedIPv6;
-}
-RRDBStatistics;
-
 typedef struct RRDBIPInfo
 {
   unsigned long long id;
@@ -70,64 +71,8 @@ typedef struct RRDBIPInfo
 }
 RRDBIPInfo;
 
-typedef struct DBQueryData
-{
-  struct
-  {
-    // insert a new registrar record
-    struct
-    {
-      RRDBStmt *stmt;
-      char      in_name[32];
-    }
-    insert;
-
-    // lookup a registrar record by name
-    struct
-    {
-      RRDBStmt      *stmt;
-      char           in_name[32];
-      RRDBRegistrar  out;
-    }
-    by_name;  
-  }
-  registrar;
-
-  struct
-  {
-    // lookup best match by address
-    struct
-    {
-      RRDBStmt  *stmt;
-      uint32_t   in_ipv4;
-      RRDBIPInfo out;
-    }
-    by_addr;
-  }
-  netblock_v4;
-
-  struct
-  {
-    // lookup best match by address
-    struct
-    {
-      RRDBStmt          *stmt;
-      unsigned __int128 in_ipv6;
-      RRDBIPInfo        out;
-    }
-    by_addr;
-  }
-  netblock_v6;
-}
-DBQueryData;
-
 bool rr_query_init(RRDBCon *con, void **udata);
 bool rr_query_deinit(RRDBCon *con, void **udata);
-
-bool rr_query_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);
-bool rr_query_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
-bool rr_query_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
-bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats);
 
 bool rr_query_registrar_by_name(
   RRDBCon *con,
@@ -139,6 +84,22 @@ bool rr_query_registrar_by_name(
 bool rr_query_registrar_insert(
   RRDBCon *con,
   const char *in_name,
-  unsigned *out_registrar_id);  
+  unsigned *out_registrar_id);
+
+bool rr_query_netblockv4_by_ip(
+  RRDBCon *con,
+  uint32_t in_ipv4,
+  RRDBIPInfo *out);
+
+bool rr_query_netblockv6_by_ip(
+  RRDBCon           *con,
+  unsigned __int128  in_ipv6,
+  RRDBIPInfo        *out);  
+
+
+bool rr_query_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);
+bool rr_query_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
+bool rr_query_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *bind);
+bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats);
 
 #endif
