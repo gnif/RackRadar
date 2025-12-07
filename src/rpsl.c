@@ -64,12 +64,16 @@ static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
 
     case REGISTRAR_APNIC:
       return
-        (strncmp(state->x.inetnum.netname, "IANA-NETBLOCK-"   , 14) == 0) ||
-        (strcmp (state->x.inetnum.netname, "IANA-BLOCK"        ) == 0) ||
-        (strcmp (state->x.inetnum.netname, "ARIN-CIDR-BLOCK"   ) == 0) ||
-        (strcmp (state->x.inetnum.netname, "RIPE-CIDR-BLOCK"   ) == 0) ||
-        (strcmp (state->x.inetnum.netname, "LACNIC-CIDR-BLOCK" ) == 0) ||
-        (strcmp (state->x.inetnum.netname, "AFRINIC-CIDR-BLOCK") == 0);
+        (strcmp (state->x.inetnum.netname, "APNIC-AP"              ) == 0) ||
+        (strncmp(state->x.inetnum.netname, "IANA-NETBLOCK-"    , 14) == 0) ||
+        (strcmp (state->x.inetnum.netname, "IANA-BLOCK"            ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "ARIN-CIDR-BLOCK"       ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "RIPE-CIDR-BLOCK"       ) == 0) ||
+        (strncmp(state->x.inetnum.netname, "JPNIC-NET-JP"      , 12) == 0) ||
+        (strcmp (state->x.inetnum.netname, "JPNICNET"              ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "OCN-JPNIC-JP"          ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "LACNIC-CIDR-BLOCK"     ) == 0) ||
+        (strcmp (state->x.inetnum.netname, "AFRINIC-CIDR-BLOCK"    ) == 0);
 
     case REGISTRAR_GENERIC:
       return false;
