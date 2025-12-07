@@ -19,6 +19,7 @@ static void * import_thread(void *)
   while(running)
   {
     RRDBCon *con;
+    int rc;
     if (!rr_db_get(&con))
     {
       LOG_ERROR("out of connections");
@@ -35,17 +36,29 @@ static void * import_thread(void *)
       unsigned serial       = 0;
       unsigned last_import  = 0;
       
-      rr_db_start(con);
-      if (!rr_query_registrar_by_name(con, src->name,
+      if (!rr_db_start(con))
+        goto put_next;
+
+      rc = rr_query_registrar_by_name(con, src->name,
         &registrar_id,
         &serial,
-        &last_import))
+        &last_import);
+
+      if (rc < 0)
+        goto next;
+
+      if (rc == 0)
       {
         LOG_INFO("Registrar not found, inserting new record...");
-        if (!rr_query_registrar_insert(con, src->name, &registrar_id))
+        rc = rr_query_registrar_insert(con, src->name, &registrar_id);
+        if (rc < 0)
+          goto put_next;
+
+        if (rc == 0)
         {
-          rr_db_rollback(con);
           LOG_ERROR("Failed to insert a new registrar");
+          if (!rr_db_rollback(con))
+            goto put_next;          
           continue;
         }
         LOG_INFO("New registrar inserted");
@@ -53,7 +66,8 @@ static void * import_thread(void *)
 
       if (last_import > 0 && time(NULL) - last_import < src->frequency)
       {
-        rr_db_rollback(con);
+        if (!rr_db_rollback(con))
+          goto put_next;
         continue;
       }
 
@@ -67,7 +81,8 @@ static void * import_thread(void *)
       if (!rr_download_to_tmpfile(dl, src->url, &fp))
       {
         LOG_ERROR("failed fetch for %s", src->name);
-        rr_db_rollback(con);
+        if (!rr_db_rollback(con))
+          goto put_next;
         continue;
       }
 
@@ -94,12 +109,14 @@ static void * import_thread(void *)
       if (success)
       {
         resultStr = "succeeded";
-        rr_db_commit(con);
+        if (!rr_db_commit(con))
+          goto put_next;
       }
       else
       {
         resultStr = "failed";
-        rr_db_rollback(con);
+        if (!rr_db_rollback(con))
+          goto put_next;
       }
       fclose(fp);      
 
@@ -115,6 +132,7 @@ static void * import_thread(void *)
         (unsigned)(us / 1000));
     }
 
+    put_next:
     rr_db_put(&con);
     next:
     usleep(1000000);
