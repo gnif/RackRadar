@@ -74,7 +74,7 @@ static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
   return false;
 }
 
-static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
+static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
 {
   unsigned long long ra;
 
@@ -93,7 +93,9 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
-          rr_db_stmt_execute(state->stmtOrg, &ra);
+          if (rr_db_stmt_execute(state->stmtOrg, &ra) != 1)
+            return false;
+
           if (ra == 1)
             ++state->stats.newOrgs;
           ++state->numOrg;            
@@ -113,7 +115,9 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             state->x.inetnum.endAddr  .v4);
 
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
-          rr_db_stmt_execute(state->stmtNetBlockV4, &ra);
+          if (!rr_db_stmt_execute(state->stmtNetBlockV4, &ra))
+            return false;
+
           if (ra == 1)
             ++state->stats.newIPv4;
 
@@ -134,7 +138,9 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             &state->x.inetnum.endAddr  .v6);
 
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
-          rr_db_stmt_execute(state->stmtNetBlockV6, &ra);
+          if (!rr_db_stmt_execute(state->stmtNetBlockV6, &ra))
+            return false;
+
           if (ra == 1)
             ++state->stats.newIPv6;
 
@@ -147,7 +153,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       state->recordType = RECORD_TYPE_IGNORE;
       memset(&state->x, 0, sizeof(state->x));
     }
-    return;
+    return true;
   }
 
   // skip comments
@@ -162,7 +168,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       break;
     }
     if (comment)
-      return;
+      return true;
   }
 
   // if new record
@@ -181,7 +187,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
     else
     {
       state->recordType = RECORD_TYPE_IGNORE;
-      return;
+      return true;
     }
 
     char *value = __strtok_r(NULL, "" , &sp);
@@ -189,7 +195,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
     {
       // invalid record had no value
       state->recordType = RECORD_TYPE_IGNORE;
-      return;
+      return true;
     }
 
     // trim leading whitespace
@@ -199,11 +205,11 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
     switch(state->recordType)
     {
       case RECORD_TYPE_IGNORE:
-        return;
+        return true;
 
       case RECORD_TYPE_ORG:
         strncpy(state->x.org.name, value, sizeof(state->x.org.name));
-        return;
+        return true;
 
       case RECORD_TYPE_INETNUM:
       {
@@ -213,7 +219,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         if (!start || !end)
         {         
           state->recordType = RECORD_TYPE_IGNORE;
-          return;
+          return true;
         }
 
         static_assert(sizeof(state->x.inetnum.startAddr.v4) == sizeof(struct in_addr));
@@ -224,7 +230,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         // convert to host order
         state->x.inetnum.startAddr.v4 = ntohl(state->x.inetnum.startAddr.v4);
         state->x.inetnum.endAddr  .v4 = ntohl(state->x.inetnum.endAddr  .v4);
-        return;
+        return true;
       }
 
       case RECORD_TYPE_INET6NUM:
@@ -235,21 +241,21 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         if (!start || !prefixLen)
         {
           state->recordType = RECORD_TYPE_IGNORE;
-          return;
+          return true;
         }
 
         static_assert(sizeof(state->x.inetnum.startAddr.v6) == sizeof(struct in6_addr));        
         if (inet_pton(AF_INET6, start, (void *)&state->x.inetnum.startAddr.v6) != 1)
         {
           state->recordType = RECORD_TYPE_IGNORE;
-          return;
+          return true;
         }
 
         state->x.inetnum.prefixLen = strtoul(prefixLen, NULL, 10);
         if (state->x.inetnum.prefixLen > 64)
           state->recordType = RECORD_TYPE_IGNORE;
 
-        return;
+        return true;
       }
     }
   }
@@ -268,7 +274,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
   switch(state->recordType)
   {
     case RECORD_TYPE_IGNORE:
-      return;
+      return true;
 
     case RECORD_TYPE_ORG:
       if (0) {}
@@ -294,11 +300,11 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 #undef MATCH
 
   if (!dst)
-    return;
+    return true;
 
   char *value = rr_trim(__strtok_r(NULL, "", &sp));
   if (!value)
-    return;
+    return true;
 
   if (!dstMulti || dst[0] == '\0')
     strncpy(dst, value, dstSz);
@@ -311,6 +317,8 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       strncpy(dst + len + 1, value, dstSz - len + 1);
     }
   }
+
+  return true;
 }
 
 static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
@@ -375,7 +383,11 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
       if (*p++ == '\n')
       {
         p[-1] = '\0';
-        rr_rpsl_process_line((char *)line, (size_t)(p - line - 1), &state);
+        if (!rr_rpsl_process_line((char *)line, (size_t)(p - line - 1), &state))
+        {
+          LOG_ERROR("failed to process line");
+          goto err_realloc;
+        }
         ++lineNo;
         line = p;
       }
@@ -411,11 +423,24 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
   }
 
   if (ptr > line)
-    rr_rpsl_process_line((char *)line, (size_t)(ptr - line), &state);
+    if (!rr_rpsl_process_line((char *)line, (size_t)(ptr - line), &state))
+    {
+      LOG_ERROR("failed to process line");
+      goto err_realloc;
+    }
 
-  rr_rpsl_process_line("", 0, &state);
+  if (!rr_rpsl_process_line("", 0, &state))
+  {
+    LOG_ERROR("failed to process line");
+    goto err_realloc;
+  }
 
   ret = rr_query_finalize_registrar(con, state.registrar_id, state.serial, &state.stats);
+  if (!ret)
+  {
+    LOG_ERROR("failed to finalize");
+    goto err_realloc;
+  }
 
 err_realloc:
   rr_db_stmt_free(&state.stmtOrg);
