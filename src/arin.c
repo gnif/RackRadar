@@ -2,6 +2,7 @@
 #include "log.h"
 #include "zip.h"
 #include "util.h"
+#include "query.h"
 
 #include <expat.h>
 
@@ -290,7 +291,7 @@ static void xml_on_end(void *userData, const char *name)
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
           rr_sanatize(state->x.org.descr, sizeof(state->x.org.descr));
-          rr_db_execute_stmt(state->stmtOrg, &ar);
+          rr_db_stmt_execute(state->stmtOrg, &ar);
           if (ar == 1)
             ++state->stats.newOrgs;
           break;
@@ -325,7 +326,7 @@ static void xml_on_end(void *userData, const char *name)
             state->x.inetnum.startAddr = pair->start;
             state->x.inetnum.endAddr   = pair->end;
             state->x.inetnum.prefixLen = pair->cidr;
-            rr_db_execute_stmt(stmt, &ar);
+            rr_db_stmt_execute(stmt, &ar);
             if (ar == 1)
               ++(*count);
           }
@@ -421,19 +422,19 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
     goto err;
   }
 
-  if (!rr_db_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
+  if (!rr_query_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
   {
     LOG_ERROR("failed to prepare org statement");
     goto err_addrs;
   }
 
-  if (!rr_db_prepare_netblockv4_insert(con, &state.stmtNetBlockV4, &state.x.inetnum))
+  if (!rr_query_prepare_netblockv4_insert(con, &state.stmtNetBlockV4, &state.x.inetnum))
   {
     LOG_ERROR("failed to prepare the netblockv4 statement");
     goto err_addrs;
   }
 
-  if (!rr_db_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
+  if (!rr_query_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
   {
     LOG_ERROR("failed to prepare the netblockv6 statement");
     goto err_addrs;
@@ -477,7 +478,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
     }
   }
 
-  rr_db_finalize_registrar(con, registrar_id, new_serial, &state.stats);
+  rr_query_finalize_registrar(con, registrar_id, new_serial, &state.stats);
   ret = true;
 
 err_xml_parser:

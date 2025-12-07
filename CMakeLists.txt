@@ -31,6 +31,7 @@ add_executable(RackRadar
   src/download.c  
   src/zip.c
   src/db.c
+  src/query.c
   src/rpsl.c
   src/arin.c
 )

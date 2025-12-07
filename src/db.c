@@ -53,7 +53,68 @@ struct RRDBStmt
   size_t         nresults;
 };
 
-#define RRDB_PARAM_OUT ((void *)((uintptr_t)-1))
+static inline enum enum_field_types rr_db_type_to_mysql_type(RRDBType type)
+{
+  switch(type)
+  {
+    case RRDB_TYPE_INT8   : return MYSQL_TYPE_TINY    ;
+    case RRDB_TYPE_UINT8  : return MYSQL_TYPE_TINY    ;
+    case RRDB_TYPE_INT    : return MYSQL_TYPE_LONG    ;
+    case RRDB_TYPE_UINT   : return MYSQL_TYPE_LONG    ;
+    case RRDB_TYPE_BIGINT : return MYSQL_TYPE_LONGLONG;
+    case RRDB_TYPE_UBIGINT: return MYSQL_TYPE_LONGLONG;
+    case RRDB_TYPE_FLOAT  : return MYSQL_TYPE_FLOAT   ;
+    case RRDB_TYPE_DOUBLE : return MYSQL_TYPE_DOUBLE  ;
+    case RRDB_TYPE_STRING : return MYSQL_TYPE_STRING  ;
+    case RRDB_TYPE_BINARY : return MYSQL_TYPE_BLOB    ;
+  }
+  assert(false);
+};
+
+static inline bool rr_db_type_is_unsigned(RRDBType type)
+{
+  switch(type)
+  {
+    case RRDB_TYPE_UINT8:
+    case RRDB_TYPE_UINT:
+    case RRDB_TYPE_UBIGINT:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+static inline bool rr_db_type_is_stringish(RRDBType type)
+{
+  switch (type)
+  {
+    case RRDB_TYPE_STRING:
+    case RRDB_TYPE_BINARY:
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+static inline unsigned long rr_db_type_length(RRDBType type)
+{
+  switch(type)
+  {
+    case RRDB_TYPE_INT8   : return sizeof(int8_t            );
+    case RRDB_TYPE_UINT8  : return sizeof(uint8_t           );
+    case RRDB_TYPE_INT    : return sizeof(int               );
+    case RRDB_TYPE_UINT   : return sizeof(unsigned          );
+    case RRDB_TYPE_BIGINT : return sizeof(long long         );
+    case RRDB_TYPE_UBIGINT: return sizeof(unsigned long long);
+    case RRDB_TYPE_FLOAT  : return sizeof(float             );
+    case RRDB_TYPE_DOUBLE : return sizeof(double            );
+    case RRDB_TYPE_STRING : return 0;
+    case RRDB_TYPE_BINARY : return 0;
+  }
+  assert(false);
+}
 
 static void * rr_db_thread(void *opaque)
 {
@@ -175,7 +236,7 @@ void rr_db_deinit(void)
   memset(&db, 0, sizeof(db));  
 }
 
-bool rr_db_get(RRDBCon **out, void **udata)
+bool rr_db_get(RRDBCon **out)
 {
   if (!db.initialized)
     return false;
@@ -190,8 +251,6 @@ bool rr_db_get(RRDBCon **out, void **udata)
       pthread_mutex_unlock(&db.pool_lock);
 
       *out = con;
-      if (udata)
-        *udata = con->udata;
       return true;
     }
   }
@@ -205,6 +264,11 @@ void rr_db_put(RRDBCon **con)
   (*con)->in_use = false;
   pthread_mutex_unlock(&db.pool_lock);
   *con = NULL;
+}
+
+void *rr_db_get_con_udata(RRDBCon *con)
+{
+  return con->udata;
 }
 
 void rr_db_start(RRDBCon *con)
@@ -225,70 +289,7 @@ void rr_db_rollback(RRDBCon *con)
     LOG_ERROR("failed to rollback the transaction: %s", mysql_error(&con->con));    
 }
 
-static inline enum enum_field_types rr_db_type_to_mysql_type(RRDBType type)
-{
-  switch(type)
-  {
-    case RRDB_TYPE_INT8   : return MYSQL_TYPE_TINY    ;
-    case RRDB_TYPE_UINT8  : return MYSQL_TYPE_TINY    ;
-    case RRDB_TYPE_INT    : return MYSQL_TYPE_LONG    ;
-    case RRDB_TYPE_UINT   : return MYSQL_TYPE_LONG    ;
-    case RRDB_TYPE_BIGINT : return MYSQL_TYPE_LONGLONG;
-    case RRDB_TYPE_UBIGINT: return MYSQL_TYPE_LONGLONG;
-    case RRDB_TYPE_FLOAT  : return MYSQL_TYPE_FLOAT   ;
-    case RRDB_TYPE_DOUBLE : return MYSQL_TYPE_DOUBLE  ;
-    case RRDB_TYPE_STRING : return MYSQL_TYPE_STRING  ;
-    case RRDB_TYPE_BINARY : return MYSQL_TYPE_BLOB    ;
-  }
-  assert(false);
-};
-
-static inline bool rr_db_type_is_unsigned(RRDBType type)
-{
-  switch(type)
-  {
-    case RRDB_TYPE_UINT8:
-    case RRDB_TYPE_UINT:
-    case RRDB_TYPE_UBIGINT:
-      return true;
-
-    default:
-      return false;
-  }
-}
-
-static inline bool rr_db_type_is_stringish(RRDBType type)
-{
-  switch (type)
-  {
-    case RRDB_TYPE_STRING:
-    case RRDB_TYPE_BINARY:
-      return true;
-
-    default:
-      return false;
-  }
-}
-
-static inline unsigned long rr_db_type_length(RRDBType type)
-{
-  switch(type)
-  {
-    case RRDB_TYPE_INT8   : return sizeof(int8_t            );
-    case RRDB_TYPE_UINT8  : return sizeof(uint8_t           );
-    case RRDB_TYPE_INT    : return sizeof(int               );
-    case RRDB_TYPE_UINT   : return sizeof(unsigned          );
-    case RRDB_TYPE_BIGINT : return sizeof(long long         );
-    case RRDB_TYPE_UBIGINT: return sizeof(unsigned long long);
-    case RRDB_TYPE_FLOAT  : return sizeof(float             );
-    case RRDB_TYPE_DOUBLE : return sizeof(double            );
-    case RRDB_TYPE_STRING : return 0;
-    case RRDB_TYPE_BINARY : return 0;
-  }
-  assert(false);
-}
-
-static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
+RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
 {
   MYSQL_STMT *stmt = mysql_stmt_init(&con->con);
   if (!stmt)
@@ -446,7 +447,7 @@ static RRDBStmt *rr_db_query_stmt(RRDBCon *con, const char *sql, ...)
   return rs;
 }
 
-bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
+bool rr_db_stmt_execute(RRDBStmt *stmt, unsigned long long *affectedRows)
 {
   for(int i = 0; i < stmt->in_params; ++i)
     if (stmt->types[i] == RRDB_TYPE_STRING)
@@ -468,10 +469,15 @@ bool rr_db_execute_stmt(RRDBStmt *stmt, unsigned long long *affectedRows)
   return true;
 }
 
+unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt)
+{
+  return mysql_stmt_insert_id(stmt->stmt);
+}
+
 bool rr_db_stmt_fetch_one(RRDBStmt *stmt)
 {
   bool ret = false;
-  if(!rr_db_execute_stmt(stmt, NULL))
+  if(!rr_db_stmt_execute(stmt, NULL))
     goto err;
 
   if (mysql_stmt_fetch(stmt->stmt) == MYSQL_NO_DATA)
@@ -502,376 +508,4 @@ void rr_db_stmt_free(RRDBStmt **rs)
 
   free(*rs);
   *rs = NULL;
-}
-
-unsigned rr_db_get_registrar_id(RRDBCon *con, const char *name, bool create, unsigned *serial, unsigned *last_import)
-{
-  RRDBStmt *st = NULL;
-  unsigned ret = 0;
-
-  if (create)
-  {
-    if (!(st = rr_db_query_stmt(con,
-      "INSERT IGNORE INTO registrar (name) VALUES (?)",
-      &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = (char *)name },
-      NULL)))
-    {
-      LOG_ERROR("prepare failed");
-      goto err;
-    }
-
-    if (!rr_db_execute_stmt(st, NULL))
-      goto err;
-
-    rr_db_stmt_free(&st);      
-  }
-
-  if (!(st = rr_db_query_stmt(con,
-    "SELECT id, serial, last_import FROM registrar WHERE name = ?",
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = (char *)name },
-    RRDB_PARAM_OUT,
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &ret        },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = serial      },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = last_import },
-
-    NULL)))
-  {
-    LOG_ERROR("prepare failed");
-    goto err;
-  }
-
-  if (!rr_db_stmt_fetch_one(st))
-  {
-    LOG_ERROR("failed to fetch");
-    goto err;
-  }
-
-err:
-  rr_db_stmt_free(&st);
-  return ret;
-}
-
-bool rr_db_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *in)
-{
-  RRDBStmt *st = rr_db_query_stmt(
-    con,
-    "INSERT INTO org ("
-      "registrar_id, "
-      "serial, "
-      "name, "
-      "org_name, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial   = VALUES(serial), "
-      "org_name = VALUES(org_name), "
-      "descr    = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT,   .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->name         },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_name     },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-    NULL);
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_db_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
-{
-  RRDBStmt *st = rr_db_query_stmt(
-    con,
-    "INSERT INTO netblock_v4 ("
-      "registrar_id, "
-      "serial, "
-      "org_id_str, "
-      "start_ip, "
-      "end_ip, "
-      "prefix_len, "
-      "netname, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial  = VALUES(serial), "
-      "netname = VALUES(netname), "
-      "descr   = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->startAddr.v4 },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->endAddr  .v4 },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-    NULL
-  );
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_db_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
-{
-  RRDBStmt *st = rr_db_query_stmt(
-    con,
-    "INSERT INTO netblock_v6 ("
-      "registrar_id, "
-      "serial, "
-      "org_id_str, "
-      "start_ip, "
-      "end_ip, "
-      "prefix_len, "
-      "netname, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial  = VALUES(serial), "
-      "netname = VALUES(netname), "
-      "descr   = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->startAddr.v6, .size = sizeof(in->startAddr) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->endAddr  .v6, .size = sizeof(in->endAddr  ) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-
-    NULL
-  );
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_db_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats)
-{
-  RRDBStmt *st;
-
-  // update the registrar serial & import timestamp
-  st = rr_db_query_stmt(con,
-    "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    NULL);
-
-  if (!st || !rr_db_execute_stmt(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  // delete all old records
-  st = rr_db_query_stmt(con,
-    "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);
-
-  if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv4))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_query_stmt(con,
-    "DELETE FROM netblock_v6 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);
-
-  if (!st || !rr_db_execute_stmt(st, &stats->deletedIPv6))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_query_stmt(con,
-    "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);    
-
-  if (!st || !rr_db_execute_stmt(st, &stats->deletedOrgs))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }  
-  rr_db_stmt_free(&st);
-
-  // link orgs to netblocks
-  st = rr_db_query_stmt(con,
-    "UPDATE netblock_v4 nb "
-    "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
-    "SET nb.org_id = o.id",
-    NULL);
-
-  if (!st || !rr_db_execute_stmt(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_query_stmt(con,
-    "UPDATE netblock_v6 nb "
-    "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
-    "SET nb.org_id = o.id",
-    NULL);
-
-  if (!st || !rr_db_execute_stmt(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);    
-
-  LOG_INFO("Import Statistics");
-  LOG_INFO("Organizations:");
-  LOG_INFO("  New    : %llu", stats->newOrgs    );
-  LOG_INFO("  Deleted: %llu", stats->deletedOrgs);
-  LOG_INFO("IPv4:");
-  LOG_INFO("  New    : %llu", stats->newIPv4    );
-  LOG_INFO("  Deleted: %llu", stats->deletedIPv4);
-  LOG_INFO("IPv6:");
-  LOG_INFO("  New    : %llu", stats->newIPv6    );
-  LOG_INFO("  Deleted: %llu", stats->deletedIPv6);
-
-  return true;
-};
-
-bool rr_db_prepare_lookup_ipv4(RRDBCon *con, RRDBStmt **stmt, uint32_t *in, RRDBIPInfo *out)
-{
-  RRDBStmt *st;
-
-  st = rr_db_query_stmt(con,
-    "SELECT "
-      "a.id, "
-      "a.registrar_id, "
-      "a.org_id_str, "
-      "b.org_name, "
-      "a.start_ip, "
-      "a.end_ip, "
-      "a.prefix_len, "
-      "a.netname, "
-      "a.descr "
-    "FROM "
-      "netblock_v4   AS a "
-      "LEFT JOIN org AS b ON b.id = a.org_id "
-    "WHERE "
-      "start_ip <= ? AND end_ip >= ? "
-    "ORDER BY "
-      "start_ip DESC "
-    "LIMIT 1",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = in, .size = sizeof(*in) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = in, .size = sizeof(*in) },
-
-    RRDB_PARAM_OUT,
-
-    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &out->id                                            },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->registrar_id                                  },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_id_str   , .size = sizeof(out->org_id_str) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_name     , .size = sizeof(out->org_name  ) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->start_ip.v4                                   },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->end_ip  .v4                                   },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &out->prefix_len                                    },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->netname     , .size = sizeof(out->netname   ) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->descr       , .size = sizeof(out->descr     ) },
-
-    NULL);
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_db_prepare_lookup_ipv6(RRDBCon *con, RRDBStmt **stmt, unsigned __int128 *in, RRDBIPInfo *out)
-{
-  RRDBStmt *st;
-
-  st = rr_db_query_stmt(con,
-    "SELECT "
-      "a.id, "
-      "a.registrar_id, "
-      "a.org_id_str, "
-      "b.org_name, "
-      "a.start_ip, "
-      "a.end_ip, "
-      "a.prefix_len, "
-      "a.netname, "
-      "a.descr "
-    "FROM "
-      "netblock_v6   AS a "
-      "LEFT JOIN org AS b ON b.id = a.org_id "
-    "WHERE "
-      "start_ip <= ? AND end_ip >= ? "
-    "ORDER BY "
-      "start_ip DESC "
-    "LIMIT 1",
-
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = in, .size = sizeof(*in) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = in, .size = sizeof(*in) },
-
-    RRDB_PARAM_OUT,
-
-    &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &out->id                                             },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &out->registrar_id                                   },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_id_str  , .size = sizeof(out->org_id_str ) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->org_name    , .size = sizeof(out->org_name   ) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &out->start_ip.v6 , .size = sizeof(out->start_ip.v6) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &out->end_ip  .v6 , .size = sizeof(out->start_ip.v4) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &out->prefix_len                                     },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->netname     , .size = sizeof(out->netname    ) },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &out->descr       , .size = sizeof(out->descr      ) },
-
-    NULL);
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
 }

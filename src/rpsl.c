@@ -1,7 +1,7 @@
 #include "rpsl.h"
 #include "log.h"
 #include "util.h"
-#include "db.h"
+#include "query.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -93,7 +93,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
-          rr_db_execute_stmt(state->stmtOrg, &ra);
+          rr_db_stmt_execute(state->stmtOrg, &ra);
           if (ra == 1)
             ++state->stats.newOrgs;
           ++state->numOrg;            
@@ -113,7 +113,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             state->x.inetnum.endAddr  .v4);
 
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
-          rr_db_execute_stmt(state->stmtNetBlockV4, &ra);
+          rr_db_stmt_execute(state->stmtNetBlockV4, &ra);
           if (ra == 1)
             ++state->stats.newIPv4;
 
@@ -134,7 +134,7 @@ static void rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
             &state->x.inetnum.endAddr  .v6);
 
           rr_sanatize(state->x.inetnum.descr, sizeof(state->x.inetnum.descr));
-          rr_db_execute_stmt(state->stmtNetBlockV6, &ra);
+          rr_db_stmt_execute(state->stmtNetBlockV6, &ra);
           if (ra == 1)
             ++state->stats.newIPv6;
 
@@ -349,19 +349,19 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
   unsigned long long lineNo = 0;
   int n;
 
-  if (!rr_db_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
+  if (!rr_query_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
   {
     LOG_ERROR("failed to prepare org statement");
     goto err_realloc;
   }
 
-  if (!rr_db_prepare_netblockv4_insert(con, &state.stmtNetBlockV4, &state.x.inetnum))
+  if (!rr_query_prepare_netblockv4_insert(con, &state.stmtNetBlockV4, &state.x.inetnum))
   {
     LOG_ERROR("failed to prepare the netblockv4 statement");
     goto err_realloc;
   }
 
-  if (!rr_db_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
+  if (!rr_query_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
   {
     LOG_ERROR("failed to prepare the netblockv6 statement");
     goto err_realloc;
@@ -415,7 +415,7 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
 
   rr_rpsl_process_line("", 0, &state);
 
-  ret = rr_db_finalize_registrar(con, state.registrar_id, state.serial, &state.stats);
+  ret = rr_query_finalize_registrar(con, state.registrar_id, state.serial, &state.stats);
 
 err_realloc:
   rr_db_stmt_free(&state.stmtOrg);
