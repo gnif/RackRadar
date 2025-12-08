@@ -1,5 +1,6 @@
 #include "query.h"
 #include "log.h"
+#include "import.h" // temp
 
 #include <stdlib.h>
 #include <string.h>
@@ -33,14 +34,14 @@ typedef struct DBQueryData
 }
 DBQueryData;
 
-#define STATEMENTS \
+#define STATEMENTS(X) \
   X(registrar_by_name  ) \
   X(registrar_insert   ) \
   X(lookup_ipv4_by_addr) \
   X(lookup_ipv6_by_addr)
 
 #pragma region registrar_by_name
-DEFAULT_STMT(registrar_by_name,
+DEFAULT_STMT(DBQueryData, registrar_by_name,
   "SELECT id, name, serial, last_import FROM registrar WHERE name = ?",
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
   RRDB_PARAM_OUT,
@@ -57,7 +58,7 @@ int rr_query_registrar_by_name(
   unsigned *out_serial,
   unsigned *out_last_import)
 {
-  DBQueryData *qd = rr_db_get_con_udata(con);
+  DBQueryData *qd = rr_db_get_con_gudata(con);
 
   strcpy(qd->registrar_by_name.in_name, in_name);
   int rc = rr_db_stmt_fetch_one(qd->registrar_by_name.stmt);
@@ -72,7 +73,7 @@ int rr_query_registrar_by_name(
 #pragma endregion
 
 #pragma region registrar_insert
-DEFAULT_STMT(registrar_insert,
+DEFAULT_STMT(DBQueryData, registrar_insert,
   "INSERT INTO registrar (name, serial, last_import) VALUES (?, 0, 0)",
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name }
 );
@@ -82,7 +83,7 @@ int rr_query_registrar_insert(
   const char *in_name,
   unsigned *out_registrar_id)
 {
-  DBQueryData *qd = rr_db_get_con_udata(con);
+  DBQueryData *qd = rr_db_get_con_gudata(con);
 
   strcpy(qd->registrar_insert.in_name, in_name);
   int rc = rr_db_stmt_execute(qd->registrar_insert.stmt, NULL);
@@ -95,7 +96,7 @@ int rr_query_registrar_insert(
 #pragma endregion
 
 #pragma region lookup_ipv4_by_addr
-DEFAULT_STMT(lookup_ipv4_by_addr,
+DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
   "SELECT "
     "a.id, "
     "a.registrar_id, "
@@ -153,7 +154,7 @@ int rr_query_netblockv4_by_ip(
   uint32_t     in_ipv4,
   RRDBIPInfo  *out)
 {
-  DBQueryData *qd = rr_db_get_con_udata(con);
+  DBQueryData *qd = rr_db_get_con_gudata(con);
 
   qd->lookup_ipv4_by_addr.in_ipv4 = in_ipv4;
   int rc = rr_db_stmt_fetch_one(qd->lookup_ipv4_by_addr.stmt);
@@ -166,7 +167,7 @@ int rr_query_netblockv4_by_ip(
 #pragma endregion
 
 #pragma region lookup_ipv6_by_addr
-DEFAULT_STMT(lookup_ipv6_by_addr,
+DEFAULT_STMT(DBQueryData, lookup_ipv6_by_addr,
   "SELECT "
     "a.id, "
     "a.registrar_id, "
@@ -223,7 +224,7 @@ int rr_query_netblockv6_by_ip(
   unsigned __int128  in_ipv6,
   RRDBIPInfo        *out)
 {
-  DBQueryData *qd = rr_db_get_con_udata(con);
+  DBQueryData *qd = rr_db_get_con_gudata(con);
 
   qd->lookup_ipv6_by_addr.in_ipv6 = in_ipv6;
   if (!rr_db_stmt_fetch_one(qd->lookup_ipv6_by_addr.stmt))
@@ -244,15 +245,7 @@ bool rr_query_init(RRDBCon *con, void **udata)
     return false;
   }
   *udata = qd;
-
-  #define X(x) \
-    if (!rr_query_prepare_ ##x(con, qd)) \
-    { \
-      LOG_ERROR("rr_query_prepare_" #x " failed"); \
-      return false; \
-    }
-  STATEMENTS
-  #undef X
+  STMT_PREPARE(STATEMENTS, qd);
   return true;
 }
 
@@ -262,324 +255,10 @@ bool rr_query_deinit(RRDBCon *con, void **udata)
     return true;
 
   DBQueryData *qd = *udata;
-
-  #define X(x) rr_query_free_ ##x(con, qd);
-  STATEMENTS
-  #undef X
+  STMT_FREE(STATEMENTS, qd);
 
   free(qd);
   *udata = NULL;
   return true;
 }
 #pragma endregion
-
-
-bool rr_query_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *in)
-{
-  RRDBStmt *st = rr_db_stmt_prepare(
-    con,
-    "INSERT INTO org ("
-      "registrar_id, "
-      "serial, "
-      "name, "
-      "org_name, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial   = VALUES(serial), "
-      "org_name = VALUES(org_name), "
-      "descr    = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT,   .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->name         },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_name     },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-    NULL);
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_query_prepare_netblockv4_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
-{
-  RRDBStmt *st = rr_db_stmt_prepare(
-    con,
-    "INSERT INTO netblock_v4 ("
-      "registrar_id, "
-      "serial, "
-      "org_id_str, "
-      "start_ip, "
-      "end_ip, "
-      "prefix_len, "
-      "netname, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial  = VALUES(serial), "
-      "netname = VALUES(netname), "
-      "descr   = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->startAddr.v4 },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->endAddr  .v4 },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-    NULL
-  );
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_query_prepare_netblockv6_insert(RRDBCon *con, RRDBStmt **stmt, RRDBNetBlock *in)
-{
-  RRDBStmt *st = rr_db_stmt_prepare(
-    con,
-    "INSERT INTO netblock_v6 ("
-      "registrar_id, "
-      "serial, "
-      "org_id_str, "
-      "start_ip, "
-      "end_ip, "
-      "prefix_len, "
-      "netname, "
-      "descr"
-    ") VALUES ("
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?,"
-      "?"
-    ") ON DUPLICATE KEY UPDATE "
-      "serial  = VALUES(serial), "
-      "netname = VALUES(netname), "
-      "descr   = VALUES(descr)",
-
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &in->serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->org_id_str   },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->startAddr.v6, .size = sizeof(in->startAddr) },
-    &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &in->endAddr  .v6, .size = sizeof(in->endAddr  ) },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &in->prefixLen    },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->netname      },
-    &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &in->descr        },
-
-    NULL
-  );
-
-  if (!st)
-    return false;
-
-  *stmt = st;
-  return true;
-}
-
-bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned serial, RRDBStatistics *stats)
-{
-  RRDBStmt *st;
-
-  // update the registrar serial & import timestamp
-  st = rr_db_stmt_prepare(con,
-    "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  // delete all old records
-  st = rr_db_stmt_prepare(con,
-    "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, &stats->deletedIPv4))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "DELETE FROM netblock_v6 WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, &stats->deletedIPv6))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
-    &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, &stats->deletedOrgs))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  // link orgs to netblocks
-  st = rr_db_stmt_prepare(con,
-    "UPDATE netblock_v4 nb "
-    "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
-    "SET nb.org_id = o.id",
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "UPDATE netblock_v6 nb "
-    "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
-    "SET nb.org_id = o.id",
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  LOG_INFO("Import Statistics");
-  LOG_INFO("Organizations:");
-  LOG_INFO("  New    : %llu", stats->newOrgs    );
-  LOG_INFO("  Deleted: %llu", stats->deletedOrgs);
-  LOG_INFO("IPv4:");
-  LOG_INFO("  New    : %llu", stats->newIPv4    );
-  LOG_INFO("  Deleted: %llu", stats->deletedIPv4);
-  LOG_INFO("IPv6:");
-  LOG_INFO("  New    : %llu", stats->newIPv6    );
-  LOG_INFO("  Deleted: %llu", stats->deletedIPv6);
-
-  return true;
-};
-
-bool rr_query_build_unions(RRDBCon *con)
-{
-  RRDBStmt *st;
-  LOG_INFO("building unions");
-  st = rr_db_stmt_prepare(con,
-    "TRUNCATE TABLE netblock_v4_union",
-    NULL);
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "INSERT INTO netblock_v4_union (start_ip, end_ip) "
-    "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
-    "FROM ( "
-      "SELECT "
-        "t.start_ip, "
-        "(@grp := @grp + (t.start_ip > @end)) AS grp, "
-        "(@end := IF(t.start_ip > @end, t.end_ip, GREATEST(@end, t.end_ip))) AS running_end "
-      "FROM ( "
-        "SELECT start_ip, end_ip "
-        "FROM netblock_v4 FORCE INDEX (idx_start_end) "
-        "ORDER BY start_ip, end_ip "
-      ") t "
-      "CROSS JOIN (SELECT @grp := -1, @end := -1) vars "
-    ") x "
-    "GROUP BY grp",
-    NULL);
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "TRUNCATE TABLE netblock_v6_union",
-    NULL);
-  if (!st || !rr_db_stmt_execute(st, NULL))
-  {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-
-  st = rr_db_stmt_prepare(con,
-    "INSERT INTO netblock_v6_union (start_ip, end_ip) "
-    "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
-    "FROM ( "
-      "SELECT "
-        "t.start_ip, "
-        "(@grp := @grp + (t.start_ip > CAST(@end AS BINARY(16)))) AS grp, "
-        "(@end := IF( "
-          "t.start_ip > CAST(@end AS BINARY(16)), "
-          "t.end_ip, "
-          "IF(t.end_ip > CAST(@end AS BINARY(16)), t.end_ip, CAST(@end AS BINARY(16))) "
-        ")) AS running_end "
-      "FROM ( "
-        "SELECT start_ip, end_ip "
-        "FROM netblock_v6 FORCE INDEX (idx_start_end) "
-        "ORDER BY start_ip, end_ip "
-      ") t "
-      "CROSS JOIN ( "
-        "SELECT @grp := -1, @end := CAST(UNHEX('00000000000000000000000000000000') AS BINARY(16)) "
-      ") vars "
-    ") x "
-    "GROUP BY grp",
-    NULL);
-
-  if (!st || !rr_db_stmt_execute(st, NULL)) {
-    rr_db_stmt_free(&st);
-    return false;
-  }
-  rr_db_stmt_free(&st);
-  LOG_INFO("finished");
-  return true;
-}

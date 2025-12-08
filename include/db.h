@@ -39,10 +39,14 @@ typedef bool (*DBUdataFn)(RRDBCon *con, void **udata);
 bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn);
 void rr_db_deinit(void);
 
+bool rr_db_reserve(RRDBCon **out, DBUdataFn udataInitFn, DBUdataFn udataDeInitFn);
+void rr_db_release(RRDBCon **con);
+
 bool rr_db_get(RRDBCon **out);
 void rr_db_put(RRDBCon **con);
 
-void *rr_db_get_con_udata(RRDBCon *con);
+void *rr_db_get_con_gudata(RRDBCon *con);
+void *rr_db_get_con_ludata(RRDBCon *con);
 
 bool rr_db_start   (RRDBCon *con);
 bool rr_db_commit  (RRDBCon *con);

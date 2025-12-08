@@ -15,17 +15,24 @@ struct RRDBCon
   unsigned id;
   bool     in_use;
   bool     is_faulty;
+  bool     is_reserved;
   MYSQL    con;
-  void    *udata;
+
+  // global user data
+  void      *gudata;
+
+  // per connection user data
+  DBUdataFn  udataInitFn;
+  DBUdataFn  udataDeInitFn;
+  void      *ludata;
 };
 
 static struct
 {
   bool  initialized;
 
-  DBUdataFn  udataInitFn;
-  DBUdataFn  udataDeInitFn;
-  void      *udata;
+  DBUdataFn udataInitFn;
+  DBUdataFn udataDeInitFn;
 
   RRDBCon         *pool;
   size_t           sz_pool;
@@ -133,7 +140,7 @@ static inline int rr_mysql_needs_reconnect(unsigned err)
   }
 }
 
-bool rr_db_init_con(RRDBCon *con)
+static bool rr_db_init_con(RRDBCon *con)
 {
   if (!mysql_init(&con->con))
   {
@@ -165,10 +172,17 @@ bool rr_db_init_con(RRDBCon *con)
   mysql_query     (&con->con, "SET collation_connection = 'utf8mb4_unicode_ci'");
   mysql_autocommit(&con->con, 1);
 
-  if (db.udataInitFn && !db.udataInitFn(con, &con->udata))
+  if (db.udataInitFn && !db.udataInitFn(con, &con->gudata))
   {
     con->is_faulty = true;
-    LOG_ERROR("udataInitFn returned false");
+    LOG_ERROR("global udataInitFn returned false");
+    return false;
+  }
+
+  if (con->udataInitFn && !con->udataInitFn(con, &con->ludata))
+  {
+    con->is_faulty = true;
+    LOG_ERROR("connection udataInitFn returned false");
     return false;
   }
 
@@ -196,8 +210,11 @@ static void * rr_db_thread(void *opaque)
         if (con->is_faulty || mysql_ping(&con->con) != 0)
         {
           LOG_WARN("connection %u failed, reconnecting", con->id);
+          if (con->udataDeInitFn)
+            con->udataDeInitFn(con, &con->ludata);
+
           if (db.udataDeInitFn)
-            db.udataDeInitFn(con, &con->udata);
+            db.udataDeInitFn(con, &con->gudata);
 
           mysql_close(&con->con);
           if (!rr_db_init_con(con))
@@ -269,8 +286,11 @@ void rr_db_deinit(void)
   {
     RRDBCon *con = db.pool + i;
 
-    if (db.udataDeInitFn && !db.udataDeInitFn(con, &con->udata))
-      LOG_ERROR("udataDeInitFn returned false");
+    if (con->udataDeInitFn && !con->udataDeInitFn(con, &con->ludata))
+      LOG_ERROR("connection udataDeInitFn returned false");
+
+    if (db.udataDeInitFn && !db.udataDeInitFn(con, &con->gudata))
+      LOG_ERROR("global udataDeInitFn returned false");
 
     mysql_close(&con->con);
   }
@@ -278,16 +298,70 @@ void rr_db_deinit(void)
   memset(&db, 0, sizeof(db));
 }
 
-bool rr_db_get(RRDBCon **out)
+bool rr_db_reserve(RRDBCon **out, DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
 {
-  if (!db.initialized)
+  if (!db.initialized || !out)
     return false;
 
   pthread_mutex_lock(&db.pool_lock);
   for(size_t i = 0; i < db.sz_pool; ++i)
   {
     RRDBCon *con = db.pool + i;
-    if (con->in_use || con->is_faulty)
+    if (con->in_use || con->is_faulty || con->is_reserved)
+      continue;
+
+    con->is_reserved   = true;
+    con->udataInitFn   = udataInitFn;
+    con->udataDeInitFn = udataDeInitFn;
+    con->ludata        = NULL;
+    pthread_mutex_unlock(&db.pool_lock);
+
+    if (udataInitFn && !udataInitFn(con, &con->ludata))
+    {
+      LOG_ERROR("udataInitFn returned false");
+      rr_db_release(&con);
+      return false;
+    }
+
+    *out = con;
+    return true;
+  }
+  pthread_mutex_unlock(&db.pool_lock);
+  return false;
+}
+
+void rr_db_release(RRDBCon **con)
+{
+  if (!con || !*con)
+    return;
+
+  pthread_mutex_lock(&db.pool_lock);
+  (*con)->is_reserved   = false;
+  (*con)->udataInitFn   = NULL;
+  (*con)->udataDeInitFn = NULL;
+  (*con)->ludata        = NULL;
+  pthread_mutex_unlock(&db.pool_lock);
+  *con = NULL;
+}
+
+bool rr_db_get(RRDBCon **out)
+{
+  if (!db.initialized || !out)
+    return false;
+
+  pthread_mutex_lock(&db.pool_lock);
+
+  if (*out && (*out)->is_reserved)
+  {
+    (*out)->in_use = true;
+    pthread_mutex_unlock(&db.pool_lock);
+    return true;
+  }
+
+  for(size_t i = 0; i < db.sz_pool; ++i)
+  {
+    RRDBCon *con = db.pool + i;
+    if (con->in_use || con->is_faulty || con->is_reserved)
       continue;
 
     con->in_use = true;
@@ -302,15 +376,23 @@ bool rr_db_get(RRDBCon **out)
 
 void rr_db_put(RRDBCon **con)
 {
+  if (!con || !*con)
+    return;
+
   pthread_mutex_lock(&db.pool_lock);
   (*con)->in_use = false;
   pthread_mutex_unlock(&db.pool_lock);
   *con = NULL;
 }
 
-void *rr_db_get_con_udata(RRDBCon *con)
+void *rr_db_get_con_gudata(RRDBCon *con)
 {
-  return con->udata;
+  return con->gudata;
+}
+
+void *rr_db_get_con_ludata(RRDBCon *con)
+{
+  return con->ludata;
 }
 
 bool rr_db_start(RRDBCon *con)

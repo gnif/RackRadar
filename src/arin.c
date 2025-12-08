@@ -2,7 +2,7 @@
 #include "log.h"
 #include "zip.h"
 #include "util.h"
-#include "query.h"
+#include "import.h"
 
 #include <expat.h>
 
@@ -27,13 +27,8 @@ struct ProcessState
 {
   XML_Parser p;
 
-  RRDBStmt *stmtOrg;
-  RRDBStmt *stmtNetBlockV4;
-  RRDBStmt *stmtNetBlockV6;
-
   unsigned registrar_id;
   unsigned serial;
-  RRDBStatistics stats;
 
   unsigned level;
   enum RecordType recordType;
@@ -267,7 +262,6 @@ err:
 static void xml_on_end(void *userData, const char *name)
 {
   struct ProcessState *state = userData;
-  unsigned long long ar;
 
   state->textPtr = NULL;
   switch(state->level--)
@@ -295,13 +289,11 @@ static void xml_on_end(void *userData, const char *name)
           state->x.org.registrar_id = state->registrar_id;
           state->x.org.serial       = state->serial;
           rr_sanatize(state->x.org.descr, sizeof(state->x.org.descr));
-          if (!rr_db_stmt_execute(state->stmtOrg, &ar))
+          if (!rr_import_org_insert(&state->x.org))
           {
             XML_StopParser(state->p, XML_FALSE);
             return;
           }
-          if (ar == 1)
-            ++state->stats.newOrgs;
           break;
 
         case RECORD_TYPE_NET:
@@ -313,34 +305,23 @@ static void xml_on_end(void *userData, const char *name)
           state->x.inetnum.registrar_id = state->registrar_id;
           state->x.inetnum.serial       = state->serial;
 
-          unsigned long long ar;
-          unsigned long long *count;
-          RRDBStmt *stmt;
-
-          if (state->ipVersion[0] == '4')
-          {
-             stmt  = state->stmtNetBlockV4;
-             count = &state->stats.newIPv4;
-          }
-          else
-          {
-            stmt  = state->stmtNetBlockV6;
-            count = &state->stats.newIPv6;
-          }
-
           for(size_t i = 0; i < state->nbAddrs; ++i)
           {
             AddrPair *pair = &state->addrs[i];
             state->x.inetnum.startAddr = pair->start;
             state->x.inetnum.endAddr   = pair->end;
             state->x.inetnum.prefixLen = pair->cidr;
-            if (!rr_db_stmt_execute(stmt, &ar))
+            bool result;
+            if (state->ipVersion[0] == '4')
+              result = rr_import_netblockv4_insert(&state->x.inetnum);
+            else
+              result = rr_import_netblockv6_insert(&state->x.inetnum);
+
+            if (!result)
             {
               XML_StopParser(state->p, XML_FALSE);
               return;
-            }
-            if (ar == 1)
-              ++(*count);
+            };
           }
           break;
         }
@@ -396,7 +377,7 @@ static void xml_on_text(void *userData, const XML_Char *s, int len)
 }
 
 bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
-  RRDBCon *con, unsigned registrar_id, unsigned new_serial)
+  unsigned registrar_id, unsigned new_serial)
 {
   unzFile uz = rr_zip_openFILE(fp);
   if (!uz)
@@ -432,24 +413,6 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
   {
     LOG_ERROR("out of memory");
     goto err;
-  }
-
-  if (!rr_query_prepare_org_insert(con, &state.stmtOrg, &state.x.org))
-  {
-    LOG_ERROR("failed to prepare org statement");
-    goto err_addrs;
-  }
-
-  if (!rr_query_prepare_netblockv4_insert(con, &state.stmtNetBlockV4, &state.x.inetnum))
-  {
-    LOG_ERROR("failed to prepare the netblockv4 statement");
-    goto err_addrs;
-  }
-
-  if (!rr_query_prepare_netblockv6_insert(con, &state.stmtNetBlockV6, &state.x.inetnum))
-  {
-    LOG_ERROR("failed to prepare the netblockv6 statement");
-    goto err_addrs;
   }
 
   state.p = XML_ParserCreate(NULL);
@@ -490,7 +453,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
     }
   }
 
-  ret = rr_query_finalize_registrar(con, registrar_id, new_serial, &state.stats);
+  ret = true;
 
 err_xml_parser:
   XML_ParserFree(state.p);
@@ -498,15 +461,12 @@ err_addrs:
   free(state.addrs);
   unzCloseCurrentFile(uz);
 err:
-  rr_db_stmt_free(&state.stmtOrg);
-  rr_db_stmt_free(&state.stmtNetBlockV4);
-  rr_db_stmt_free(&state.stmtNetBlockV6);
   unzClose(uz);
   return ret;
 }
 
 bool rr_arin_import_zip(const char *registrar, const char *filename,
-  RRDBCon *con, unsigned registrar_id, unsigned new_serial)
+  unsigned registrar_id, unsigned new_serial)
 {
   FILE *fp = fopen(filename, "rb");
   if (!fp)
@@ -515,7 +475,7 @@ bool rr_arin_import_zip(const char *registrar, const char *filename,
     return false;
   }
 
-  bool ret = rr_arin_import_zip_FILE(registrar, fp, con, registrar_id, new_serial);
+  bool ret = rr_arin_import_zip_FILE(registrar, fp, registrar_id, new_serial);
   fclose(fp);
   return ret;
 }
