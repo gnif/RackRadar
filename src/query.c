@@ -1,6 +1,5 @@
 #include "query.h"
 #include "log.h"
-#include "import.h" // temp
 
 #include <stdlib.h>
 #include <string.h>

@@ -5,10 +5,9 @@
 
 #include <mysql.h>
 #include <errmsg.h>
-#include <string.h>
 #include <pthread.h>
-#include <unistd.h>
 #include <assert.h>
+#include <string.h>
 
 struct RRDBCon
 {
