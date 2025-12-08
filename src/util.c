@@ -150,7 +150,7 @@ err_ucsdet:
   }
   else
   {
-    // if failed to convert, just remove non-ascii chars  
+    // if failed to convert, just remove non-ascii chars
     char * p = text;
     for(int i = 0; i < textLen; ++i)
     {

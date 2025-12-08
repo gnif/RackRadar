@@ -77,7 +77,7 @@ unzFile rr_zip_openFILE(FILE *fp)
     LOG_ERROR("out of memory");
     return NULL;
   }
-  
+
   ctx->fp = fp;
 
   zlib_filefunc64_def ff =

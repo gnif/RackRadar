@@ -22,7 +22,7 @@ struct
     struct MHD_Response *r400;
     struct MHD_Response *r404;
     struct MHD_Response *r405;
-    struct MHD_Response *r500;    
+    struct MHD_Response *r500;
   }
   response;
 }
@@ -67,7 +67,7 @@ static int http_handler_ip(struct MHD_Connection *con, const char *uri)
       rr_db_put(&dbcon);
       return 404;
     }
-    rr_db_put(&dbcon);    
+    rr_db_put(&dbcon);
 
     uint32_t netip = htonl(info.start_ip.v4);
     inet_ntop(AF_INET, &netip, ipstring, sizeof(ipstring));
@@ -156,7 +156,7 @@ static enum MHD_Result httpd_handler(
                   MHD_HTTP_INTERNAL_SERVER_ERROR, s_http.response.r500);
           break;
       }
-      
+
       return MHD_YES;
     }
   }
@@ -189,10 +189,10 @@ bool rr_http_init(void)
   MHD_add_response_header(s_http.response.r404, "Content-Type", "text/plain");
   s_http.response.r405 =
     MHD_create_response_from_buffer_static(strlen(r405), r405);
-  MHD_add_response_header(s_http.response.r405, "Content-Type", "text/plain");    
+  MHD_add_response_header(s_http.response.r405, "Content-Type", "text/plain");
   s_http.response.r500 =
     MHD_create_response_from_buffer_static(strlen(r500), r500);
-  MHD_add_response_header(s_http.response.r500, "Content-Type", "text/plain");    
+  MHD_add_response_header(s_http.response.r500, "Content-Type", "text/plain");
 
   MHD_set_panic_func(httpd_panic_handler, NULL);
   s_http.daemon = MHD_start_daemon(

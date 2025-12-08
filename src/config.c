@@ -61,12 +61,12 @@ bool rr_config_init(void)
         break;
     }
   }
-  
+
   config_setting_t *sources = config_lookup(&s_config, "sources");
   if (!sources || config_setting_type(sources) != CONFIG_TYPE_GROUP)
   {
     LOG_ERROR("'sources' missing or is not a group");
-    return false;    
+    return false;
   }
 
   g_config.nbSources = config_setting_length(sources);
@@ -79,7 +79,7 @@ bool rr_config_init(void)
 
   for (unsigned i = 0; i < g_config.nbSources; ++i)
   {
-    typeof(*g_config.sources) *dst = &g_config.sources[i];    
+    typeof(*g_config.sources) *dst = &g_config.sources[i];
     const config_setting_t    *src = config_setting_get_elem(sources, i);
 
     dst->name = config_setting_name(src);
@@ -97,7 +97,7 @@ bool rr_config_init(void)
     else
     {
       dst->type = SOURCE_TYPE_INVALID;
-      LOG_ERROR("Unsupported source type %s", type);      
+      LOG_ERROR("Unsupported source type %s", type);
     }
   }
 

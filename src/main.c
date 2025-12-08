@@ -38,7 +38,7 @@ static void * import_thread(void *)
       unsigned registrar_id = 0;
       unsigned serial       = 0;
       unsigned last_import  = 0;
-      
+
       if (!rr_db_start(con))
         goto put_next;
 
@@ -61,7 +61,7 @@ static void * import_thread(void *)
         {
           LOG_ERROR("Failed to insert a new registrar");
           if (!rr_db_rollback(con))
-            goto put_next;          
+            goto put_next;
           continue;
         }
         LOG_INFO("New registrar inserted");
@@ -122,7 +122,7 @@ static void * import_thread(void *)
           goto put_next;
         resultStr = "failed";
       }
-      fclose(fp);      
+      fclose(fp);
 
       uint64_t elapsed = rr_microtime() - startTime;
       uint64_t sec     = elapsed / 1000000UL;
@@ -147,7 +147,7 @@ static void * import_thread(void *)
           goto put_next;
       }
       else
-      {        
+      {
         LOG_ERROR("failed to rebuild the unions");
         if (!rr_db_rollback(con))
           goto put_next;

@@ -94,7 +94,7 @@ int rr_query_netblockv4_by_ip(
 int rr_query_netblockv6_by_ip(
   RRDBCon           *con,
   unsigned __int128  in_ipv6,
-  RRDBIPInfo        *out);  
+  RRDBIPInfo        *out);
 
 
 bool rr_query_prepare_org_insert(RRDBCon *con, RRDBStmt **stmt, RRDBOrg *bind);

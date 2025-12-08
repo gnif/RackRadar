@@ -28,7 +28,7 @@ add_executable(RackRadar
   src/log.c
   src/util.c
   src/config.c
-  src/download.c  
+  src/download.c
   src/zip.c
   src/db.c
   src/query.c
@@ -45,9 +45,9 @@ include_directories(RackRadar PRIVATE
   include
   ${LIBCONFIG_INCLUDE_DIRS}
   ${MARIADB_CLIENT_INCLUDE_DIRS}
-  ${CURL_INCLUDE_DIRS}  
+  ${CURL_INCLUDE_DIRS}
   ${ZLIB_INCLUDE_DIRS}
-  ${EXPAT_INCLUDE_DIRS}  
+  ${EXPAT_INCLUDE_DIRS}
   ${MINIZIP_INCLUDE_DIRS}
   ${ICU_INCLUDE_DIRS}
   ${Iconv_INCLUDE_DIRS}
@@ -57,11 +57,11 @@ include_directories(RackRadar PRIVATE
 target_link_libraries(RackRadar
   ${LIBCONFIG_LIBRARIES}
   ${MARIADB_CLIENT_LIBRARIES}
-  ${CURL_LIBRARIES}  
+  ${CURL_LIBRARIES}
   ${ZLIB_LIBRARIES}
   ${EXPAT_LIBRARIES}
   ${MINIZIP_LIBRARIES}
-  ${ICU_LIBRARIES}  
+  ${ICU_LIBRARIES}
   ${Iconv_LIBRARIES}
   ${LIBMICROHTTPD_LIBRARIES}
   pthread

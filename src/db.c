@@ -42,11 +42,11 @@ struct RRDBStmt
   MYSQL_STMT    *stmt;
 
   size_t         in_params;
-  RRDBType      *types;  
+  RRDBType      *types;
   MYSQL_BIND    *bind;
   unsigned long *lengths;
   my_bool       *is_null;
-  
+
   size_t         out_params;
   RRDBType      *rtypes;
   MYSQL_BIND    *rbind;
@@ -143,9 +143,9 @@ bool rr_db_init_con(RRDBCon *con)
   }
 
   my_bool reconnect = false;
-  mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4" );    
+  mysql_options(&con->con, MYSQL_SET_CHARSET_NAME, "utf8mb4" );
   mysql_options(&con->con, MYSQL_OPT_RECONNECT   , &reconnect);
-  
+
   if (!mysql_real_connect(
     &con->con,
     g_config.database.port != 0 ? g_config.database.host : NULL,
@@ -249,7 +249,7 @@ bool rr_db_init(DBUdataFn udataInitFn, DBUdataFn udataDeInitFn)
   db.running = true;
   pthread_mutex_init(&db.pool_lock, NULL);
   if (pthread_create(&db.thread, NULL, rr_db_thread, NULL) != 0)
-  { 
+  {
     LOG_ERROR("Failed to create the database thread");
     rr_db_deinit();
     return false;
@@ -272,10 +272,10 @@ void rr_db_deinit(void)
     if (db.udataDeInitFn && !db.udataDeInitFn(con, &con->udata))
       LOG_ERROR("udataDeInitFn returned false");
 
-    mysql_close(&con->con);    
+    mysql_close(&con->con);
   }
   free(db.pool);
-  memset(&db, 0, sizeof(db));  
+  memset(&db, 0, sizeof(db));
 }
 
 bool rr_db_get(RRDBCon **out)
@@ -316,7 +316,7 @@ void *rr_db_get_con_udata(RRDBCon *con)
 bool rr_db_start(RRDBCon *con)
 {
   if (mysql_query(&con->con, "START TRANSACTION") != 0)
-  {  
+  {
     con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&con->con));
     LOG_ERROR("failed to start the transaction (%u): %s", con->id, mysql_error(&con->con));
     return false;
@@ -370,7 +370,7 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
   size_t out_params = 0;
   bool   in         = true;
   for (;;)
-  {    
+  {
     RRDBParam *param = va_arg(ap, RRDBParam *);
     if (param == RRDB_PARAM_OUT)
     {
@@ -449,7 +449,7 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
       rs->bind[i].length = NULL;
       rs->bind[i].is_unsigned = rr_db_type_is_unsigned(param->type);
     }
-  }    
+  }
 
   // NULL or RRDB_PARAM_OUT
   (void)va_arg(ap, void *);
@@ -513,7 +513,7 @@ bool rr_db_stmt_execute(RRDBStmt *stmt, unsigned long long *affectedRows)
   for(int i = 0; i < stmt->in_params; ++i)
     if (stmt->types[i] == RRDB_TYPE_STRING)
     {
-      const char * str = stmt->bind[i].buffer;      
+      const char * str = stmt->bind[i].buffer;
       stmt->lengths[i] = (unsigned long)strlen(str);
       stmt->bind[i].buffer_length = stmt->lengths[i];
     }

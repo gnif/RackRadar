@@ -17,7 +17,7 @@
 
 #define DEFAULT_STMT(x, ...) \
   DEFAULT_STMT_PREPARE(x, __VA_ARGS__) \
-  DEFAULT_STMT_FREE(x)  
+  DEFAULT_STMT_FREE(x)
 
 #define STMT_STRUCT(x, y) \
   struct \

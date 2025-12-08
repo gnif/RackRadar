@@ -50,12 +50,12 @@ struct ProcessState
   bool inNetBlocks;
   bool inNetBlock;
   char startAddr[40];
-  char endAddr  [40];  
+  char endAddr  [40];
 
   AddrPair *addrs;
   size_t    nbAddrs;
   size_t    szAddrs;
-  
+
   char   *textPtr;
   size_t  textPtrSz;
 
@@ -74,7 +74,7 @@ static void setup_comment(struct ProcessState *state)
     return;
 
   if (state->commentPtrOff >= state->commentPtrSz - 1)
-    return;    
+    return;
 
   if (state->commentPtrOff > 0)
   {
@@ -101,7 +101,7 @@ static void add_netblock(struct ProcessState *state)
       keep = true;
       break;
     }
-  
+
   if (!keep)
     return;
 
@@ -112,7 +112,7 @@ static void add_netblock(struct ProcessState *state)
     if (!new)
     {
       LOG_ERROR("out of memory");
-      XML_StopParser(state->p, XML_FALSE);    
+      XML_StopParser(state->p, XML_FALSE);
       return;
     }
     state->addrs = new;
@@ -135,7 +135,7 @@ static void add_netblock(struct ProcessState *state)
     if ((rr_parse_ipv4_decimal(state->startAddr, (void *)&pair->start.v4) != 1) ||
         (rr_parse_ipv4_decimal(state->endAddr  , (void *)&pair->end  .v4) != 1))
     {
-      LOG_WARN("v4 inet_pton failure: %s -> %s", state->startAddr, state->endAddr);    
+      LOG_WARN("v4 inet_pton failure: %s -> %s", state->startAddr, state->endAddr);
       return;
     }
 
@@ -197,7 +197,7 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
           MATCH("handle" , x.org.name    );
           else if (strcmp(name, "comment") == 0)
           {
-            state->inComment     = true;          
+            state->inComment     = true;
             state->commentPtr    = state->x.org.descr;
             state->commentPtrSz  = sizeof(state->x.org.descr);
             state->commentPtrOff = 0;
@@ -213,7 +213,7 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
             state->inNetBlocks = true;
           else if (strcmp(name, "comment") == 0)
           {
-            state->inComment     = true;          
+            state->inComment     = true;
             state->commentPtr    = state->x.inetnum.descr;
             state->commentPtrSz  = sizeof(state->x.inetnum.descr);
             state->commentPtrOff = 0;
@@ -316,7 +316,7 @@ static void xml_on_end(void *userData, const char *name)
           unsigned long long ar;
           unsigned long long *count;
           RRDBStmt *stmt;
-          
+
           if (state->ipVersion[0] == '4')
           {
              stmt  = state->stmtNetBlockV4;
@@ -343,7 +343,7 @@ static void xml_on_end(void *userData, const char *name)
               ++(*count);
           }
           break;
-        }        
+        }
       }
       break;
 
@@ -371,7 +371,7 @@ static void xml_on_end(void *userData, const char *name)
       add_netblock(state);
       state->inNetBlock = false;
       break;
-  }  
+  }
 }
 
 static void xml_on_text(void *userData, const XML_Char *s, int len)
@@ -496,7 +496,7 @@ err_xml_parser:
   XML_ParserFree(state.p);
 err_addrs:
   free(state.addrs);
-  unzCloseCurrentFile(uz);  
+  unzCloseCurrentFile(uz);
 err:
   rr_db_stmt_free(&state.stmtOrg);
   rr_db_stmt_free(&state.stmtNetBlockV4);

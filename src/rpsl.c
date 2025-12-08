@@ -105,7 +105,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
           if (ra == 1)
             ++state->stats.newOrgs;
-          ++state->numOrg;            
+          ++state->numOrg;
           break;
 
         case RECORD_TYPE_INETNUM:
@@ -129,7 +129,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         case RECORD_TYPE_INET6NUM:
           if (rr_rpsl_skip_inetnum(state))
             break;
-        
+
           state->x.inetnum.registrar_id = state->registrar_id;
           state->x.inetnum.serial       = state->serial;
 
@@ -210,10 +210,10 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       case RECORD_TYPE_INETNUM:
       {
         sp = NULL;
-        char *start = rr_trim(__strtok_r(value, "-", &sp));        
+        char *start = rr_trim(__strtok_r(value, "-", &sp));
         char *end   = rr_trim(__strtok_r(NULL , "" , &sp));
         if (!start || !end)
-        {         
+        {
           state->recordType = RECORD_TYPE_IGNORE;
           return true;
         }
@@ -248,7 +248,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       case RECORD_TYPE_INET6NUM:
       {
         sp = NULL;
-        char *start     = rr_trim(__strtok_r(value, "/", &sp));        
+        char *start     = rr_trim(__strtok_r(value, "/", &sp));
         char *prefixLen = rr_trim(__strtok_r(NULL , "" , &sp));
         if (!start || !prefixLen)
         {
@@ -256,7 +256,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
           return true;
         }
 
-        static_assert(sizeof(state->x.inetnum.startAddr.v6) == sizeof(struct in6_addr));        
+        static_assert(sizeof(state->x.inetnum.startAddr.v6) == sizeof(struct in6_addr));
         if (inet_pton(AF_INET6, start, (void *)&state->x.inetnum.startAddr.v6) != 1)
         {
           state->recordType = RECORD_TYPE_IGNORE;
@@ -280,7 +280,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       }
     }
   }
-  
+
   char *sp    = NULL;
   char *name  = __strtok_r(line, ":", &sp);
 
@@ -304,7 +304,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       break;
 
     case RECORD_TYPE_INETNUM:
-      if (0) {}      
+      if (0) {}
       MATCH("org"    , inetnum.org_id_str, false);
       MATCH("netname", inetnum.netname   , false);
       MATCH("descr"  , inetnum.descr     , true );
@@ -312,7 +312,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
     case RECORD_TYPE_INET6NUM:
       if (0) {}
-      MATCH("org"    , inetnum.org_id_str, false);      
+      MATCH("org"    , inetnum.org_id_str, false);
       MATCH("netname", inetnum.netname   , false);
       MATCH("descr"  , inetnum.descr     , true );
       break;
@@ -438,7 +438,7 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
         size_t rem = (size_t)(ptr - line);
         memmove(buf, line, rem);
         line = buf;
-        ptr = buf + rem;        
+        ptr = buf + rem;
       }
     }
   }
@@ -477,7 +477,7 @@ err_realloc:
     LOG_INFO("  Inet6num   : %llu", state.numInet6num);
     LOG_INFO("  Ignored    : %llu", state.numIngore  );
   }
-  
+
   free(buf);
 err_gzopen:
   LOG_INFO(ret ? "success" : "failure");
@@ -508,7 +508,7 @@ bool rr_rpsl_import_gz_FILE(const char *registrar, FILE *fp,
     LOG_ERROR("failed to seek to the start of the file");
     return false;
   }
-  
+
   gzFile gz = gzdopen(fd2, "rb");
   if (!gz)
   {

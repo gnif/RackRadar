@@ -11,7 +11,7 @@ typedef struct DBQueryData
   // lookup a registrar record by name
   STMT_STRUCT(registrar_by_name,
     char           in_name[32];
-    RRDBRegistrar  out;  
+    RRDBRegistrar  out;
   );
 
   // insert a new registrar record
@@ -20,7 +20,7 @@ typedef struct DBQueryData
   );
 
   // lookup best match by address
-  STMT_STRUCT(lookup_ipv4_by_addr,  
+  STMT_STRUCT(lookup_ipv4_by_addr,
     uint32_t   in_ipv4;
     RRDBIPInfo out;
   );
@@ -178,13 +178,13 @@ DEFAULT_STMT(lookup_ipv6_by_addr,
     "a.netname, "
     "a.descr "
   "FROM "
-    /* Guard: only proceed if IP is inside the union coverage */  
+    /* Guard: only proceed if IP is inside the union coverage */
     "(SELECT end_ip "
     " FROM netblock_v6_union "
     " WHERE start_ip <= ? "
     " ORDER BY start_ip DESC "
     " LIMIT 1) g "
-    /* Real lookup */    
+    /* Real lookup */
     "JOIN ("
       "SELECT id "
       "FROM netblock_v6 FORCE INDEX (idx_start_end) "
@@ -268,7 +268,7 @@ bool rr_query_deinit(RRDBCon *con, void **udata)
   #undef X
 
   free(qd);
-  *udata = NULL;  
+  *udata = NULL;
   return true;
 }
 #pragma endregion
@@ -449,13 +449,13 @@ bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned s
     "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
     &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &registrar_id },
     &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &serial       },
-    NULL);    
+    NULL);
 
   if (!st || !rr_db_stmt_execute(st, &stats->deletedOrgs))
   {
     rr_db_stmt_free(&st);
     return false;
-  }  
+  }
   rr_db_stmt_free(&st);
 
   // link orgs to netblocks
@@ -487,7 +487,7 @@ bool rr_query_finalize_registrar(RRDBCon *con, unsigned registrar_id, unsigned s
     rr_db_stmt_free(&st);
     return false;
   }
-  rr_db_stmt_free(&st);    
+  rr_db_stmt_free(&st);
 
   LOG_INFO("Import Statistics");
   LOG_INFO("Organizations:");

@@ -27,7 +27,7 @@ bool rr_download_init(RRDownload **ph)
     LOG_ERROR("out of memory");
     return false;
   }
- 
+
   h->ch = curl_easy_init();
   if (!h->ch)
   {
@@ -40,7 +40,7 @@ bool rr_download_init(RRDownload **ph)
   curl_easy_setopt(h->ch, CURLOPT_WRITEFUNCTION , NULL     );
   curl_easy_setopt(h->ch, CURLOPT_ERRORBUFFER   , h->errBuf);
   curl_easy_setopt(h->ch, CURLOPT_CONNECTTIMEOUT, 15L      );
-  curl_easy_setopt(h->ch, CURLOPT_TIMEOUT       , 0L       );  
+  curl_easy_setopt(h->ch, CURLOPT_TIMEOUT       , 0L       );
 
   *ph = h;
   return true;
