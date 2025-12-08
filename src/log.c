@@ -69,7 +69,9 @@ inline static void rr_log_levelVA(enum DebugLevel level, const char * file,
   uint64_t sec     = elapsed / 1000000UL;
   uint64_t us      = elapsed % 1000000UL;
 
-  fprintf(stderr, "%02u:%02u:%02u.%03u %s %18s:%-4u | %-30s | ",
+  char buffer[16384];
+  int len = snprintf(buffer, sizeof(buffer) - 8,
+    "%02u:%02u:%02u.%03u %s %18s:%-4u | %-30s | ",
       (unsigned)(sec / 60 / 60),
       (unsigned)(sec / 60 % 60),
       (unsigned)(sec % 60),
@@ -78,8 +80,19 @@ inline static void rr_log_levelVA(enum DebugLevel level, const char * file,
       f,
       line, function);
 
-  vfprintf(stderr, format, va);
-  fprintf(stderr, "%s\n", log_lookup[LOG_LEVEL_NONE]);
+  int n = vsnprintf(buffer + len, sizeof(buffer) - len - 8, format, va);
+
+  if (n < 0)
+  {
+    len += snprintf(buffer + len, sizeof(buffer) - len, "vsnprintf failed%s\n",
+      log_lookup[LOG_LEVEL_NONE]);
+  }
+  else
+  {
+    len += n;
+    len += snprintf(buffer + len, sizeof(buffer) - len, "%s\n", log_lookup[LOG_LEVEL_NONE]);
+  }
+  write(STDERR_FILENO, buffer, len);
 }
 
 void rr_log_level(enum DebugLevel level, const char * file, unsigned int line,
