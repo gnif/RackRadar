@@ -179,10 +179,6 @@ bool rr_config_init(void)
     list->name = config_setting_name(s);
     config_setting_t *include  = config_setting_lookup(s, "include" );
     config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
-    config_setting_t *netname  = config_setting_lookup(s, "netname" );
-    config_setting_t *descr    = config_setting_lookup(s, "netname" );
-    config_setting_t *org_name = config_setting_lookup(s, "org_name");
-    config_setting_t *org      = config_setting_lookup(s, "org"     );
 
     if (include && !rr_config_read_string_array(include, &list->include))
     {
@@ -196,29 +192,20 @@ bool rr_config_init(void)
       continue;
     }
 
-    if (netname && !rr_config_read_list_filter(netname, &list->netname))
-    {
-      LOG_ERROR("lists.%s.netname failed to load", list->name);
-      continue;
-    }
+    #define LOAD_FILTER(x) \
+      config_setting_t *x = config_setting_lookup(s, #x); \
+      if (x && !rr_config_read_list_filter(x, &list->x)) \
+      { \
+        LOG_ERROR("lists.%s." #x " failed to load", list->name); \
+        continue; \
+      } \
+      list->has_matches = list->has_matches || (list->x.match  != NULL); \
+      list->has_ignores = list->has_ignores || (list->x.ignore != NULL);
 
-    if (netname && !rr_config_read_list_filter(descr, &list->descr))
-    {
-      LOG_ERROR("lists.%s.descr failed to load", list->name);
-      continue;
-    }
-
-    if (org_name && !rr_config_read_list_filter(org_name, &list->org_name))
-    {
-      LOG_ERROR("lists.%s.org_name failed to load", list->name);
-      continue;
-    }
-
-    if (org && !rr_config_read_list_filter(org, &list->org))
-    {
-      LOG_ERROR("lists.%s.org failed to load", list->name);
-      continue;
-    }
+    #define X(x, y) LOAD_FILTER(x ##_ ##y)
+    CONFIG_LIST_FIELDS
+    #undef X
+    #undef LOAD_FILTER
 
     ++list;
     ++g_config.nbLists;
@@ -233,14 +220,11 @@ void rr_config_deinit(void)
   {
     free(list->include);
     free(list->exclude);
-    free(list->netname .ignore);
-    free(list->netname .match );
-    free(list->descr   .ignore);
-    free(list->descr   .match );
-    free(list->org_name.ignore);
-    free(list->org_name.match );
-    free(list->org     .ignore);
-    free(list->org     .match );
+    #define X(x, y) \
+      free(list->x ##_ ##y.match ); \
+      free(list->x ##_ ##y.ignore);
+    CONFIG_LIST_FIELDS
+    #undef X
   }
   free(g_config.lists);
 

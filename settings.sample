@@ -42,12 +42,12 @@ lists:
   {
     include: [];
     exclude: [];
-    netname:
+    ip_netname:
     {
       match : [ "OVH-%", "OVH_%" ];
       ignore: [ "OVHTelecom" ];
     };
-    descr:
+    ip_descr:
     {
       match : [];
       ignore: [];
@@ -57,7 +57,12 @@ lists:
       match : [ "OVH %", "OVHCloud%" ];
       ignore: [];
     };
-    org:
+    org_org:
+    {
+      match : [];
+      ignore: [];
+    };
+    org_descr:
     {
       match : [];
       ignore: [];

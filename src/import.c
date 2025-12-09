@@ -456,6 +456,18 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
   {
+    #define ADD_CONDITION(x, y, z) \
+      if (cl->x ##_ ##y.z) \
+        for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
+          pos += snprintf(query + pos, sizeof(query) - pos, \
+            "%s" #x "." #y " LIKE '%s'", \
+            conditions > 0 ? " OR " : "", \
+            *str \
+          ); \
+
+    if (!cl->has_matches)
+      continue;
+
     char query[8192];
     for(int n = 0; n < 2; ++n)
     {
@@ -477,76 +489,18 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         ver);
 
       int conditions = 0;
-
-      if (cl->netname.match)
-        for(const char **str = cl->netname.match; *str; ++str, ++conditions)
-          pos += snprintf(query + pos, sizeof(query) - pos,
-            "%sip.netname LIKE '%s'",
-            conditions > 0 ? " OR " : "",
-            *str
-          );
-
-      if (cl->descr.match)
-        for(const char **str = cl->descr.match; *str; ++str, ++conditions)
-          pos += snprintf(query + pos, sizeof(query) - pos,
-            "%sip.descr LIKE '%s'",
-            conditions > 0 ? " OR " : "",
-            *str
-          );
-
-      if (cl->org_name.match)
-        for(const char **str = cl->org_name.match; *str; ++str, ++conditions)
-          pos += snprintf(query + pos, sizeof(query) - pos,
-            "%sorg.org_name LIKE '%s'",
-            conditions > 0 ? " OR " : "",
-            *str
-          );
-
-      if (cl->org.match)
-        for(const char **str = cl->org.match; *str; ++str, ++conditions)
-          pos += snprintf(query + pos, sizeof(query) - pos,
-            "%sorg.org LIKE '%s'",
-            conditions > 0 ? " OR " : "",
-            *str
-          );
-
+      #define X(x, y) ADD_CONDITION(x, y, match)
+      CONFIG_LIST_FIELDS
+      #undef X
       pos += snprintf(query + pos, sizeof(query) - pos, ")");
 
-      if (cl->netname.ignore || cl->org_name.ignore)
+      if (cl->has_ignores)
       {
         pos += snprintf(query + pos, sizeof(query) - pos, " AND NOT (");
         conditions = 0;
-        if (cl->netname.ignore)
-          for(const char **str = cl->netname.ignore; *str; ++str, ++conditions)
-            pos += snprintf(query + pos, sizeof(query) - pos,
-              "%sip.netname LIKE '%s'",
-              conditions > 0 ? " OR " : "",
-              *str
-            );
-
-        if (cl->descr.match)
-          for(const char **str = cl->descr.match; *str; ++str, ++conditions)
-            pos += snprintf(query + pos, sizeof(query) - pos,
-              "%sip.descr LIKE '%s'",
-              conditions > 0 ? " OR " : "",
-              *str
-            );
-
-        if (cl->org_name.ignore)
-          for(const char **str = cl->org_name.ignore; *str; ++str, ++conditions)
-            pos += snprintf(query + pos, sizeof(query) - pos,
-              "%sorg.org_name LIKE '%s'",
-              conditions > 0 ? " OR " : "",
-              *str
-            );
-
-        if (cl->org.ignore)
-          for(const char **str = cl->org.ignore; *str; ++str, ++conditions)
-            pos += snprintf(query + pos, sizeof(query) - pos,
-              "%sorg.org LIKE '%s'",
-              conditions > 0 ? " OR " : "",
-              *str
-            );
+        #define X(x, y) ADD_CONDITION(x, y, ignore)
+        CONFIG_LIST_FIELDS
+        #undef X
         pos += snprintf(query + pos, sizeof(query) - pos, ")");
       }
 
@@ -566,6 +520,8 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     ++list;
   }
 
+  #undef ADD_CONDITION
+  #undef CONFIG_LIST_FIELDS
   return true;
 }
 

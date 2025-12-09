@@ -13,6 +13,13 @@
   \
   SETTING_INT(http.port    , 8888       )
 
+#define CONFIG_LIST_FIELDS \
+  X(org, org    ) \
+  X(org, name   ) \
+  X(org, descr  ) \
+  X(ip , netname) \
+  X(ip , descr  )
+
 typedef struct ConfigFilter
 {
   const char **match;
@@ -20,17 +27,18 @@ typedef struct ConfigFilter
 }
 ConfigFilter;
 
+#define X(x, y) ConfigFilter x ##_ ##y;
 typedef struct ConfigList
 {
   const char *name;
   const char **include;
   const char **exclude;
-  ConfigFilter netname;
-  ConfigFilter descr;
-  ConfigFilter org_name;
-  ConfigFilter org;
+  bool has_matches;
+  bool has_ignores;
+  CONFIG_LIST_FIELDS
 }
 ConfigList;
+#undef X
 
 typedef struct Config
 {
