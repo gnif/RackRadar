@@ -443,6 +443,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   *udata = &s_import;
   STMT_PREPARE(STATEMENTS, *udata);
 
+  if (!g_config.lists)
+    return true;
+
   s_import.lists_prepare = calloc(g_config.nbLists + 1, sizeof(*s_import.lists_prepare));
   if (!s_import.lists_prepare)
   {
@@ -483,6 +486,14 @@ static bool db_init_fn(RRDBCon *con, void **udata)
             *str
           );
 
+      if (cl->descr.match)
+        for(const char **str = cl->descr.match; *str; ++str, ++conditions)
+          pos += snprintf(query + pos, sizeof(query) - pos,
+            "%sip.descr LIKE '%s'",
+            conditions > 0 ? " OR " : "",
+            *str
+          );
+
       if (cl->org_name.match)
         for(const char **str = cl->org_name.match; *str; ++str, ++conditions)
           pos += snprintf(query + pos, sizeof(query) - pos,
@@ -509,6 +520,14 @@ static bool db_init_fn(RRDBCon *con, void **udata)
           for(const char **str = cl->netname.ignore; *str; ++str, ++conditions)
             pos += snprintf(query + pos, sizeof(query) - pos,
               "%sip.netname LIKE '%s'",
+              conditions > 0 ? " OR " : "",
+              *str
+            );
+
+        if (cl->descr.match)
+          for(const char **str = cl->descr.match; *str; ++str, ++conditions)
+            pos += snprintf(query + pos, sizeof(query) - pos,
+              "%sip.descr LIKE '%s'",
               conditions > 0 ? " OR " : "",
               *str
             );
@@ -592,6 +611,9 @@ void rr_import_deinit(void)
 
 static bool rr_import_build_lists_internal(RRDBCon *con)
 {
+  if (!g_config.lists)
+    return true;
+
   LOG_INFO("rebuilding lists");
   for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list->stmt[0] && list->stmt[1]; ++list)
   {

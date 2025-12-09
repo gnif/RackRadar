@@ -180,6 +180,7 @@ bool rr_config_init(void)
     config_setting_t *include  = config_setting_lookup(s, "include" );
     config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
     config_setting_t *netname  = config_setting_lookup(s, "netname" );
+    config_setting_t *descr    = config_setting_lookup(s, "netname" );
     config_setting_t *org_name = config_setting_lookup(s, "org_name");
     config_setting_t *org      = config_setting_lookup(s, "org"     );
 
@@ -198,6 +199,12 @@ bool rr_config_init(void)
     if (netname && !rr_config_read_list_filter(netname, &list->netname))
     {
       LOG_ERROR("lists.%s.netname failed to load", list->name);
+      continue;
+    }
+
+    if (netname && !rr_config_read_list_filter(descr, &list->descr))
+    {
+      LOG_ERROR("lists.%s.descr failed to load", list->name);
       continue;
     }
 
@@ -228,6 +235,8 @@ void rr_config_deinit(void)
     free(list->exclude);
     free(list->netname .ignore);
     free(list->netname .match );
+    free(list->descr   .ignore);
+    free(list->descr   .match );
     free(list->org_name.ignore);
     free(list->org_name.match );
     free(list->org     .ignore);

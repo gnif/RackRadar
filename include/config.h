@@ -26,6 +26,7 @@ typedef struct ConfigList
   const char **include;
   const char **exclude;
   ConfigFilter netname;
+  ConfigFilter descr;
   ConfigFilter org_name;
   ConfigFilter org;
 }
