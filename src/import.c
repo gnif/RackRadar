@@ -63,6 +63,24 @@ typedef struct RRImport
   STMT_STRUCT(netblockv6_union_truncate,);
   STMT_STRUCT(netblockv4_union_populate,);
   STMT_STRUCT(netblockv6_union_populate,);
+
+  STMT_STRUCT(list_insert,
+    char in_list_name[32];
+  );
+
+  STMT_STRUCT(netblockv4_list_delete,
+    char in_list_name[32];
+  );
+  STMT_STRUCT(netblockv6_list_delete,
+    char in_list_name[32];
+  );
+
+  struct
+  {
+    char in_list_name[32];
+    RRDBStmt *stmt[2];
+  }
+  *lists_prepare;
 }
 RRImport;
 RRImport s_import = { 0 };
@@ -81,7 +99,10 @@ RRImport s_import = { 0 };
   X(netblockv4_union_truncate) \
   X(netblockv6_union_truncate) \
   X(netblockv4_union_populate) \
-  X(netblockv6_union_populate)
+  X(netblockv6_union_populate) \
+  X(list_insert              ) \
+  X(netblockv4_list_delete   ) \
+  X(netblockv6_list_delete   )
 
 #pragma region statements
 DEFAULT_STMT(RRImport, registrar_insert,
@@ -272,6 +293,20 @@ DEFAULT_STMT(RRImport, netblockv6_union_populate,
   "GROUP BY grp"
 );
 
+DEFAULT_STMT(RRImport, list_insert,
+  "INSERT IGNORE INTO list (name) VALUES (?)",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_list_name }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_list_delete,
+  "DELETE FROM netblock_v4_list WHERE list_id IN (SELECT id FROM list WHERE name = ?)",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_list_name }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_list_delete,
+  "DELETE FROM netblock_v6_list WHERE list_id IN (SELECT id FROM list WHERE name = ?)",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_list_name }
+);
 #pragma endregion
 
 #pragma region statement_interfaces
@@ -383,18 +418,150 @@ static bool rr_import_netblockv6_union_populate(void)
 {
   return rr_db_stmt_execute(s_import.netblockv6_union_populate.stmt, NULL);
 }
+
+static bool rr_import_list_insert(const char *in_list_name)
+{
+  strcpy(s_import.list_insert.in_list_name, in_list_name);
+  return rr_db_stmt_execute(s_import.list_insert.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_list_delete(const char *in_list_name)
+{
+  strcpy(s_import.netblockv4_list_delete.in_list_name, in_list_name);
+  return rr_db_stmt_execute(s_import.netblockv4_list_delete.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_list_delete(const char *in_list_name)
+{
+  strcpy(s_import.netblockv6_list_delete.in_list_name, in_list_name);
+  return rr_db_stmt_execute(s_import.netblockv6_list_delete.stmt, NULL);
+}
 #pragma endregion
 
 static bool db_init_fn(RRDBCon *con, void **udata)
 {
   *udata = &s_import;
   STMT_PREPARE(STATEMENTS, *udata);
+
+  s_import.lists_prepare = calloc(g_config.nbLists + 1, sizeof(*s_import.lists_prepare));
+  if (!s_import.lists_prepare)
+  {
+    LOG_ERROR("out of memory");
+    return false;
+  }
+
+  typeof(s_import.lists_prepare) list = s_import.lists_prepare;
+  for(ConfigList *cl = g_config.lists; cl->name; ++cl)
+  {
+    char query[8192];
+    for(int n = 0; n < 2; ++n)
+    {
+      off_t pos = 0;
+      const char *ver = n == 0 ? "v4" : "v6";
+      pos += snprintf(query + pos, sizeof(query) - pos,
+        "INSERT INTO netblock_%s_list "
+        "SELECT "
+          "list.id, "
+          "ip.id, "
+          "ip.start_ip, "
+          "ip.prefix_len "
+        "FROM "
+          "netblock_%s     AS ip "
+          "RIGHT JOIN list AS list ON list.name = ? "
+          "LEFT  JOIN org  AS org  ON org.id    = ip.org_id "
+        "WHERE (",
+        ver,
+        ver);
+
+      int conditions = 0;
+
+      if (cl->netname.match)
+        for(const char **str = cl->netname.match; *str; ++str, ++conditions)
+          pos += snprintf(query + pos, sizeof(query) - pos,
+            "%sip.netname LIKE '%s'",
+            conditions > 0 ? " OR " : "",
+            *str
+          );
+
+      if (cl->org_name.match)
+        for(const char **str = cl->org_name.match; *str; ++str, ++conditions)
+          pos += snprintf(query + pos, sizeof(query) - pos,
+            "%sorg.org_name LIKE '%s'",
+            conditions > 0 ? " OR " : "",
+            *str
+          );
+
+      if (cl->org.match)
+        for(const char **str = cl->org.match; *str; ++str, ++conditions)
+          pos += snprintf(query + pos, sizeof(query) - pos,
+            "%sorg.org LIKE '%s'",
+            conditions > 0 ? " OR " : "",
+            *str
+          );
+
+      pos += snprintf(query + pos, sizeof(query) - pos, ")");
+
+      if (cl->netname.ignore || cl->org_name.ignore)
+      {
+        pos += snprintf(query + pos, sizeof(query) - pos, " AND NOT (");
+        conditions = 0;
+        if (cl->netname.ignore)
+          for(const char **str = cl->netname.ignore; *str; ++str, ++conditions)
+            pos += snprintf(query + pos, sizeof(query) - pos,
+              "%sip.netname LIKE '%s'",
+              conditions > 0 ? " OR " : "",
+              *str
+            );
+
+        if (cl->org_name.ignore)
+          for(const char **str = cl->org_name.ignore; *str; ++str, ++conditions)
+            pos += snprintf(query + pos, sizeof(query) - pos,
+              "%sorg.org_name LIKE '%s'",
+              conditions > 0 ? " OR " : "",
+              *str
+            );
+
+        if (cl->org.ignore)
+          for(const char **str = cl->org.ignore; *str; ++str, ++conditions)
+            pos += snprintf(query + pos, sizeof(query) - pos,
+              "%sorg.org LIKE '%s'",
+              conditions > 0 ? " OR " : "",
+              *str
+            );
+        pos += snprintf(query + pos, sizeof(query) - pos, ")");
+      }
+
+      strcpy(list->in_list_name, cl->name);
+      list->stmt[n] = rr_db_stmt_prepare(con, query,
+        &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &list->in_list_name },
+        NULL
+      );
+
+      if (!list->stmt[n])
+      {
+        LOG_ERROR("failed to prepare %s statement for list %s", ver, cl->name);
+        continue;
+      }
+    }
+
+    ++list;
+  }
+
   return true;
 }
 
 static bool db_deinit_fn(RRDBCon *con, void **udata)
 {
   STMT_FREE(STATEMENTS, *udata);
+
+  for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list; ++list)
+  {
+    for(int n = 0; n < ARRAY_SIZE(list->stmt); ++n)
+      rr_db_stmt_free(&list->stmt[n]);
+  }
+  free(s_import.lists_prepare);
+  s_import.lists_prepare = NULL;
+
   *udata = NULL;
   return true;
 }
@@ -423,10 +590,47 @@ void rr_import_deinit(void)
   rr_download_deinit(&s_import.dl);
 }
 
+static bool rr_import_build_lists_internal(RRDBCon *con)
+{
+  LOG_INFO("rebuilding lists");
+  for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list->stmt[0] && list->stmt[1]; ++list)
+  {
+    LOG_INFO("  Building: %s", list->in_list_name);
+    if (
+      !rr_db_start(con) ||
+      !rr_import_list_insert(list->in_list_name) ||
+      !rr_import_netblockv4_list_delete(list->in_list_name) ||
+      !rr_import_netblockv6_list_delete(list->in_list_name) ||
+      !rr_db_stmt_execute(list->stmt[0], NULL) ||
+      !rr_db_stmt_execute(list->stmt[1], NULL) ||
+      !rr_db_commit(con))
+    {
+      LOG_ERROR("failed");
+      return false;
+    }
+  }
+  LOG_INFO("done");
+  return true;
+}
+
+bool rr_import_build_lists(void)
+{
+  RRDBCon *con = s_import.con;
+  if (!rr_db_get(&con))
+  {
+    LOG_ERROR("failed to get the reserved connection");
+    return false;
+  }
+  bool result = rr_import_build_lists_internal(con);
+  rr_db_put(&con);
+  return result;
+}
+
 bool rr_import_run(void)
 {
   int rc;
   bool rebuild_unions = false;
+  bool rebuild_lists  = false;
   while(true)
   {
     RRDBCon *con = s_import.con;
@@ -542,6 +746,7 @@ bool rr_import_run(void)
 
         resultStr = "succeeded";
         rebuild_unions = true;
+        rebuild_lists  = true;
       }
       else
       {
@@ -591,6 +796,9 @@ bool rr_import_run(void)
       LOG_INFO("done");
       rebuild_unions = false;
     }
+
+    if (rebuild_lists && rr_import_build_lists_internal(con))
+      rebuild_lists = false;
 
     fail_con:
     rr_db_put(&con);

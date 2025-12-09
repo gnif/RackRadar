@@ -13,6 +13,24 @@
   \
   SETTING_INT(http.port    , 8888       )
 
+typedef struct ConfigFilter
+{
+  const char **match;
+  const char **ignore;
+}
+ConfigFilter;
+
+typedef struct ConfigList
+{
+  const char *name;
+  const char **include;
+  const char **exclude;
+  ConfigFilter netname;
+  ConfigFilter org_name;
+  ConfigFilter org;
+}
+ConfigList;
+
 typedef struct Config
 {
   struct
@@ -49,6 +67,9 @@ typedef struct Config
   }
   *sources;
   unsigned nbSources;
+
+  ConfigList *lists;
+  unsigned    nbLists;
 }
 Config;
 

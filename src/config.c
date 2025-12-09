@@ -35,6 +35,61 @@ static config_t s_config = { 0 };
 #undef SETTING_STR
 #undef SETTING_INT
 
+static bool rr_config_read_string_array(const config_setting_t *array, const char ***out)
+{
+  if (config_setting_type(array) != CONFIG_TYPE_ARRAY)
+  {
+    LOG_ERROR("not an array");
+    return false;
+  }
+
+  unsigned count = config_setting_length(array);
+  if (count == 0)
+    return true;
+
+  const char **values = calloc(count+1, sizeof(*values));
+  if (!values)
+  {
+    LOG_ERROR("out of memory");
+    return false;
+  }
+
+  for(unsigned i = 0; i < count; ++i)
+  {
+    const config_setting_t *elem = config_setting_get_elem(array, i);
+    values[i] = config_setting_get_string(elem);
+    if (!values[i])
+    {
+      LOG_ERROR("invalid value in array, %d is not a string", i);
+      free(values);
+      return false;
+    }
+  }
+
+  *out = values;
+  return true;
+}
+
+static bool rr_config_read_list_filter(const config_setting_t *filter, ConfigFilter *out)
+{
+  config_setting_t *match  = config_setting_lookup(filter, "match" );
+  config_setting_t *ignore = config_setting_lookup(filter, "ignore");
+
+  if (match && !rr_config_read_string_array(match, &out->match))
+  {
+    LOG_ERROR("failed to load filter 'match'");
+    return false;
+  }
+
+  if (ignore && !rr_config_read_string_array(ignore, &out->ignore))
+  {
+    LOG_ERROR("failed to load filter 'ignore'");
+    return false;
+  }
+
+  return true;
+}
+
 bool rr_config_init(void)
 {
   config_init(&s_config);
@@ -70,7 +125,7 @@ bool rr_config_init(void)
   }
 
   g_config.nbSources = config_setting_length(sources);
-  g_config.sources   = calloc(g_config.nbSources, sizeof(*g_config.sources));
+  g_config.sources   = calloc(g_config.nbSources + 1, sizeof(*g_config.sources));
   if (!g_config.sources)
   {
     LOG_ERROR("out of memory");
@@ -101,12 +156,86 @@ bool rr_config_init(void)
     }
   }
 
+  config_setting_t *lists = config_lookup(&s_config, "lists");
+  if (!lists || config_setting_type(lists) != CONFIG_TYPE_GROUP)
+  {
+    LOG_ERROR("'lists' missing or is not a group");
+    return false;
+  }
+
+  unsigned len   = config_setting_length(lists);
+  g_config.lists = calloc(len + 1, sizeof(*g_config.lists));
+  if (!g_config.lists)
+  {
+    LOG_ERROR("out of memory");
+    return false;
+  }
+
+  ConfigList *list = g_config.lists;
+  for (unsigned i = 0; i < len; ++i)
+  {
+    const config_setting_t *s = config_setting_get_elem(lists, i);
+
+    list->name = config_setting_name(s);
+    config_setting_t *include  = config_setting_lookup(s, "include" );
+    config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
+    config_setting_t *netname  = config_setting_lookup(s, "netname" );
+    config_setting_t *org_name = config_setting_lookup(s, "org_name");
+    config_setting_t *org      = config_setting_lookup(s, "org"     );
+
+    if (include && !rr_config_read_string_array(include, &list->include))
+    {
+      LOG_ERROR("lists.%s.include failed to load", list->name);
+      continue;
+    }
+
+    if (exclude && !rr_config_read_string_array(exclude, &list->exclude))
+    {
+      LOG_ERROR("lists.%s.exclude failed to load", list->name);
+      continue;
+    }
+
+    if (netname && !rr_config_read_list_filter(netname, &list->netname))
+    {
+      LOG_ERROR("lists.%s.netname failed to load", list->name);
+      continue;
+    }
+
+    if (org_name && !rr_config_read_list_filter(org_name, &list->org_name))
+    {
+      LOG_ERROR("lists.%s.org_name failed to load", list->name);
+      continue;
+    }
+
+    if (org && !rr_config_read_list_filter(org, &list->org))
+    {
+      LOG_ERROR("lists.%s.org failed to load", list->name);
+      continue;
+    }
+
+    ++list;
+    ++g_config.nbLists;
+  }
+
   return true;
 }
 
 void rr_config_deinit(void)
 {
-  config_destroy(&s_config);
+  for(ConfigList *list = g_config.lists; list->name; ++list)
+  {
+    free(list->include);
+    free(list->exclude);
+    free(list->netname .ignore);
+    free(list->netname .match );
+    free(list->org_name.ignore);
+    free(list->org_name.match );
+    free(list->org     .ignore);
+    free(list->org     .match );
+  }
+  free(g_config.lists);
+
   free(g_config.sources);
+  config_destroy(&s_config);
   memset(&g_config, 0, sizeof(g_config));
 }

@@ -28,6 +28,10 @@ int main(int argc, char *argv[])
     return EXIT_FAILURE;
   }
 
+  /* the configuration may have changed so we must
+  rebuild the lists to correct the if they were changed */
+  rr_import_build_lists();
+
   rr_import_run();
 
   rr_http_deinit();

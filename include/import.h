@@ -6,6 +6,10 @@
 
 bool rr_import_init(void);
 void rr_import_deinit(void);
+
+// only used at startup, do not call after rr_import_run has started!
+bool rr_import_build_lists(void);
+
 bool rr_import_run(void);
 
 // for use by the import code only when called from rr_import_run
