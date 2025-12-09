@@ -30,6 +30,12 @@ typedef struct DBQueryData
     unsigned __int128 in_ipv6;
     RRDBIPInfo out;
   );
+
+  STMT_STRUCT(netblock_v4_list,
+    char     in_name[32];
+    uint32_t out_start_ip;
+    uint8_t  out_prefix_len;
+  );
 }
 DBQueryData;
 
@@ -37,7 +43,8 @@ DBQueryData;
   X(registrar_by_name  ) \
   X(registrar_insert   ) \
   X(lookup_ipv4_by_addr) \
-  X(lookup_ipv6_by_addr)
+  X(lookup_ipv6_by_addr) \
+  X(netblock_v4_list   )
 
 #pragma region registrar_by_name
 DEFAULT_STMT(DBQueryData, registrar_by_name,
@@ -231,6 +238,41 @@ int rr_query_netblockv6_by_ip(
 
   memcpy(out, &qd->lookup_ipv6_by_addr.out, sizeof(*out));
   return true;
+}
+#pragma endregion
+
+#pragma region netblock_v4_list
+DEFAULT_STMT(DBQueryData, netblock_v4_list,
+  "SELECT start_ip, prefix_len FROM netblock_v4_list A, list B WHERE B.id = A.list_id AND B.name = ? ORDER BY start_ip ASC",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_name, .size = sizeof(this->in_name) },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->out_start_ip   },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_prefix_len }
+);
+
+bool rr_query_netblockv4_list_start(RRDBCon *con, const char *name)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  strncpy(qd->netblock_v4_list.in_name, name, sizeof(qd->netblock_v4_list.in_name));
+  return rr_db_stmt_query(qd->netblock_v4_list.stmt);
+}
+
+int  rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint8_t *out_prefix_len)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  int rc = rr_db_stmt_fetch(qd->netblock_v4_list.stmt);
+  if (rc < 1)
+    return rc;
+
+  *out_start_ip   = qd->netblock_v4_list.out_start_ip;
+  *out_prefix_len = qd->netblock_v4_list.out_prefix_len;
+  return 1;
+}
+
+void rr_query_netblockv4_list_end(RRDBCon *con)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  rr_db_stmt_close(qd->netblock_v4_list.stmt);
 }
 #pragma endregion
 

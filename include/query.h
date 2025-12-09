@@ -29,4 +29,8 @@ int rr_query_netblockv6_by_ip(
   unsigned __int128  in_ipv6,
   RRDBIPInfo        *out);
 
+bool rr_query_netblockv4_list_start(RRDBCon *con, const char *name);
+int  rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint8_t *out_prefix_len);
+void rr_query_netblockv4_list_end(RRDBCon *con);
+
 #endif

@@ -31,7 +31,7 @@ s_http = {};
 static int http_handler_ip(struct MHD_Connection *con, const char *uri)
 {
   struct MHD_Response *res;
-  RRDBCon   *dbcon;
+  RRDBCon   *dbcon = NULL;
   RRDBIPInfo info;
   char       ipstring[64];
 
@@ -95,16 +95,95 @@ static int http_handler_ip(struct MHD_Connection *con, const char *uri)
   return 200;
 }
 
-static int http_handler_org(struct MHD_Connection *con, const char *uri)
+static ssize_t http_handler_list_cb_reader(void *cls, uint64_t pos, char *buf, size_t max)
 {
-  LOG_INFO(uri);
-  return false;
+  RRDBCon *dbcon = cls;
+  uint32_t start_ip;
+  uint8_t  prefix_len;
+
+  const size_t maxLineLen = 19; //ipv4 + / + 2 + \n
+  ssize_t out = 0;
+  while(max >= maxLineLen)
+  {
+    int rc = rr_query_netblockv4_list_fetch(dbcon, &start_ip, &prefix_len);
+    if (rc == 0)
+      break;
+
+    if (rc < 0)
+      return MHD_CONTENT_READER_END_WITH_ERROR;
+
+    start_ip = htonl(start_ip);
+    inet_ntop(AF_INET, &start_ip, buf, max);
+    size_t len = strlen(buf);
+    len += sprintf(buf + len, "/%d\n", prefix_len);
+
+    buf += len;
+    out += len;
+    max -= len;
+  }
+
+  if (out == 0)
+    return MHD_CONTENT_READER_END_OF_STREAM;
+
+  return out;
+}
+
+static void http_handler_list_cb_free(void *cls)
+{
+  RRDBCon *dbcon = cls;
+  rr_query_netblockv4_list_end(dbcon);
+  rr_db_put(&dbcon);
+}
+
+static int http_handler_list(struct MHD_Connection *con, const char *uri)
+{
+  bool found = false;
+  for(ConfigList * list = g_config.lists; list->name; ++list)
+  {
+    if (strcmp(list->name, uri) == 0)
+    {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found)
+    return 404;
+
+  RRDBCon *dbcon = NULL;
+  if (!rr_db_get(&dbcon))
+    return 500;
+
+  if (!rr_query_netblockv4_list_start(dbcon, uri))
+  {
+    rr_db_put(&dbcon);
+    return 500;
+  }
+
+  struct MHD_Response *resp = MHD_create_response_from_callback(
+    MHD_SIZE_UNKNOWN,
+    1024,
+    http_handler_list_cb_reader,
+    dbcon,
+    http_handler_list_cb_free);
+
+  if (!resp)
+    return 500;
+
+  MHD_add_response_header(resp, "Content-Type", "text/plain");
+  if (MHD_queue_response(con, MHD_HTTP_OK, resp) != MHD_YES)
+  {
+    MHD_destroy_response(resp);
+    return 500;
+  }
+  MHD_destroy_response(resp);
+  return 200;
 }
 
 static RRHTTPHander s_handlers[] =
 {
-  { "/ip/" , http_handler_ip  },
-  { "/org/", http_handler_org },
+  { "/ip/"  , http_handler_ip   },
+  { "/list/", http_handler_list },
 };
 
 static enum MHD_Result httpd_handler(
@@ -153,7 +232,7 @@ static enum MHD_Result httpd_handler(
         case 500:
         default:
           MHD_queue_response(con,
-                  MHD_HTTP_INTERNAL_SERVER_ERROR, s_http.response.r500);
+            MHD_HTTP_INTERNAL_SERVER_ERROR, s_http.response.r500);
           break;
       }
 

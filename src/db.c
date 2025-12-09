@@ -651,9 +651,9 @@ int rr_db_stmt_fetch_one(RRDBStmt *stmt)
       str[stmt->rlengths[i]] = '\0';
     }
 
-  ret = true;
-  err:
-    return ret;
+  ret = 1;
+err:
+  return ret;
 }
 
 void rr_db_stmt_free(RRDBStmt **rs)
@@ -666,4 +666,53 @@ void rr_db_stmt_free(RRDBStmt **rs)
 
   free(*rs);
   *rs = NULL;
+}
+
+bool rr_db_stmt_query(RRDBStmt *stmt)
+{
+  int ret = -1;
+  if(!rr_db_stmt_execute(stmt, NULL))
+    goto err;
+
+  ret = 1;
+err:
+  return ret;
+}
+
+int rr_db_stmt_fetch(RRDBStmt *stmt)
+{
+  int ret = -1;
+  int rc;
+  if ((rc = mysql_stmt_fetch(stmt->stmt)) == 1)
+  {
+    stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+    goto err;
+  }
+
+  if (rc == MYSQL_NO_DATA)
+  {
+    ret = 0;
+    goto err;
+  }
+
+  // null terminate strings
+  for(int i = 0; i < stmt->out_params; ++i)
+    if (stmt->rtypes[i] == RRDB_TYPE_STRING)
+    {
+      char *str = stmt->rbind[i].buffer;
+      str[stmt->rlengths[i]] = '\0';
+    }
+
+  ret = 1;
+err:
+  return ret;
+}
+
+void rr_db_stmt_close(RRDBStmt *stmt)
+{
+  if (!mysql_stmt_free_result(stmt->stmt) && mysql_stmt_errno(stmt->stmt) != 0)
+  {
+    LOG_ERROR("mysql_stmt_free_result: %s", mysql_stmt_error(stmt->stmt));
+    stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+  }
 }

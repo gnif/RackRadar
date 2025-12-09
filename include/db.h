@@ -58,4 +58,8 @@ unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt);
 int                rr_db_stmt_fetch_one(RRDBStmt *stmt);
 void               rr_db_stmt_free     (RRDBStmt **rs);
 
+bool rr_db_stmt_query(RRDBStmt *stmt);
+int  rr_db_stmt_fetch(RRDBStmt *stmt);
+void rr_db_stmt_close(RRDBStmt *stmt);
+
 #endif
