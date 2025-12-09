@@ -59,6 +59,7 @@ int                rr_db_stmt_fetch_one(RRDBStmt *stmt);
 void               rr_db_stmt_free     (RRDBStmt **rs);
 
 bool rr_db_stmt_query(RRDBStmt *stmt);
+bool rr_db_stmt_store(RRDBStmt *stmt);
 int  rr_db_stmt_fetch(RRDBStmt *stmt);
 void rr_db_stmt_close(RRDBStmt *stmt);
 

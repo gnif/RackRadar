@@ -188,8 +188,8 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
 
         case RECORD_TYPE_ORG:
           if (0);
-          MATCH("name"   , x.org.org_name);
-          MATCH("handle" , x.org.name    );
+          MATCH("handle", x.org.handle);
+          MATCH("name"  , x.org.name  );
           else if (strcmp(name, "comment") == 0)
           {
             state->inComment     = true;
@@ -201,7 +201,7 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
 
         case RECORD_TYPE_NET:
           if (0);
-          MATCH("orgHandle", x.inetnum.org_id_str);
+          MATCH("orgHandle", x.inetnum.org_handle);
           MATCH("name"     , x.inetnum.netname   );
           MATCH("version"  , ipVersion           );
           else if (strcmp(name, "netBlocks") == 0)
@@ -283,7 +283,7 @@ static void xml_on_end(void *userData, const char *name)
 
         case RECORD_TYPE_ORG:
           //filter out the generic top level org
-          if (strcmp(state->x.org.name, "ARIN") == 0)
+          if (strcmp(state->x.org.handle, "ARIN") == 0)
             break;
 
           state->x.org.registrar_id = state->registrar_id;
@@ -299,7 +299,7 @@ static void xml_on_end(void *userData, const char *name)
         case RECORD_TYPE_NET:
         {
           //filter out the generic top level netblocks
-          if (strcmp(state->x.inetnum.org_id_str, "ARIN") == 0)
+          if (strcmp(state->x.inetnum.org_handle, "ARIN") == 0)
             break;
 
           state->x.inetnum.registrar_id = state->registrar_id;

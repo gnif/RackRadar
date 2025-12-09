@@ -679,6 +679,16 @@ err:
   return ret;
 }
 
+bool rr_db_stmt_store(RRDBStmt *stmt)
+{
+  int rc = mysql_stmt_store_result(stmt->stmt);
+  if (rc == 0)
+    return true;
+
+  stmt->con->is_faulty = rr_mysql_needs_reconnect(mysql_stmt_errno(stmt->stmt));
+  return false;
+}
+
 int rr_db_stmt_fetch(RRDBStmt *stmt)
 {
   int ret = -1;

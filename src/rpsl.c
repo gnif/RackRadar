@@ -186,7 +186,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         return true;
 
       case RECORD_TYPE_ORG:
-        strncpy(state->x.org.name, value, sizeof(state->x.org.name));
+        strncpy(state->x.org.handle, value, sizeof(state->x.org.handle));
         return true;
 
       case RECORD_TYPE_INETNUM:
@@ -281,20 +281,20 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
     case RECORD_TYPE_ORG:
       if (0) {}
-      MATCH("org-name", org.org_name, false);
-      MATCH("descr"   , org.descr   , true );
+      MATCH("org-name", org.name , false);
+      MATCH("descr"   , org.descr, true );
       break;
 
     case RECORD_TYPE_INETNUM:
       if (0) {}
-      MATCH("org"    , inetnum.org_id_str, false);
+      MATCH("org"    , inetnum.org_handle, false);
       MATCH("netname", inetnum.netname   , false);
-      MATCH("descr"  , inetnum.descr     , true );
+      MATCH("descr"  , inetnum.descr  ,    true );
       break;
 
     case RECORD_TYPE_INET6NUM:
       if (0) {}
-      MATCH("org"    , inetnum.org_id_str, false);
+      MATCH("org"    , inetnum.org_handle, false);
       MATCH("netname", inetnum.netname   , false);
       MATCH("descr"  , inetnum.descr     , true );
       break;

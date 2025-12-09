@@ -48,9 +48,69 @@ static inline char * rr_trim(char *v)
   return v;
 }
 
+static inline unsigned __int128 rr_bswap128(unsigned __int128 x)
+{
+  uint64_t lo = (uint64_t)x;
+  uint64_t hi = (uint64_t)(x >> 64);
+  return ((unsigned __int128)__builtin_bswap64(lo) << 64) |
+         (unsigned __int128)__builtin_bswap64(hi);
+}
+
+static inline unsigned __int128 rr_raw_to_be(unsigned __int128 raw)
+{
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  return rr_bswap128(raw);
+#else
+  return raw;
+#endif
+}
+
+static inline unsigned __int128 rr_be_to_raw(unsigned __int128 be)
+{
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  return rr_bswap128(be);
+#else
+  return be;
+#endif
+}
+
+static inline void rr_ntop_u128_raw(char *dst, size_t dstlen, unsigned __int128 raw)
+{
+  struct in6_addr a;
+  memcpy(&a, &raw, 16);
+  inet_ntop(AF_INET6, &a, dst, dstlen);
+}
+
+static inline uint8_t rr_u128_ctz_be(unsigned __int128 x)
+{
+  if (x == 0) return 128;
+
+  uint64_t lo = (uint64_t)x;
+  if (lo) return (uint8_t)__builtin_ctzll((unsigned long long)lo);
+
+  uint64_t hi = (uint64_t)(x >> 64);
+  return (uint8_t)(64u + (uint8_t)__builtin_ctzll((unsigned long long)hi));
+}
+
+static inline uint8_t rr_u128_msb_be(unsigned __int128 x)
+{
+  // floor(log2(x)), x != 0
+  uint64_t hi = (uint64_t)(x >> 64);
+  if (hi)
+    return (uint8_t)(64u + (uint8_t)(63u - (uint8_t)__builtin_clzll((unsigned long long)hi)));
+
+  uint64_t lo = (uint64_t)x;
+  return (uint8_t)(63u - (uint8_t)__builtin_clzll((unsigned long long)lo));
+}
+
 static inline size_t rr_align_up(size_t off, size_t a)
 {
   return (off + (a - 1)) & ~(a - 1);
+}
+
+static inline uint64_t rr_lowbit_u32(uint32_t x)
+{
+  return x ? (uint64_t)(x & (~x + 1u)) : (1ULL << 32);
 }
 
 #define RR_ARENA_CALC_TOTAL(T, FIELDS, TOTAL_LVAL) do {                       \

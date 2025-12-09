@@ -29,12 +29,21 @@ int rr_query_netblockv6_by_ip(
   unsigned __int128  in_ipv6,
   RRDBIPInfo        *out);
 
-bool rr_query_netblockv4_list_start(RRDBCon *con, const char *name);
-int  rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint8_t *out_prefix_len);
+int  rr_query_list_by_name(RRDBCon *con, const char *in_name, unsigned *out_list_id);
+bool rr_query_netblockv4_list_start(RRDBCon *con, unsigned in_list_id, bool store);
+int  rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint32_t *out_end_ip, uint8_t *out_prefix_len);
 void rr_query_netblockv4_list_end  (RRDBCon *con);
 
-bool rr_query_netblockv6_list_start(RRDBCon *con, const char *name);
-int  rr_query_netblockv6_list_fetch(RRDBCon *con, unsigned __int128 *out_start_ip, uint8_t *out_prefix_len);
+bool rr_query_netblockv6_list_start(RRDBCon *con, unsigned in_list_id, bool store);
+int rr_query_netblockv6_list_fetch(RRDBCon *con, unsigned __int128 *out_start_ip, unsigned __int128 *out_end_ip, uint8_t *out_prefix_len);
 void rr_query_netblockv6_list_end  (RRDBCon *con);
+
+bool rr_query_netblockv4_list_union_start(RRDBCon *con, unsigned in_list_id, bool store);
+int rr_query_netblockv4_list_union_fetch (RRDBCon *con, uint32_t *out_ip, uint8_t *out_prefix_len);
+void rr_query_netblockv4_list_union_end  (RRDBCon *con);
+
+bool rr_query_netblockv6_list_union_start(RRDBCon *con, unsigned in_list_id, bool store);
+int rr_query_netblockv6_list_union_fetch (RRDBCon *con, unsigned __int128 *out_ip, uint8_t *out_prefix_len);
+void rr_query_netblockv6_list_union_end  (RRDBCon *con);
 
 #endif

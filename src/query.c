@@ -31,27 +31,50 @@ typedef struct DBQueryData
     RRDBIPInfo out;
   );
 
+  // lookup a list record by name
+  STMT_STRUCT(list_by_name,
+    char      in_name[32];
+    unsigned  out_list_id;
+  );
+
   STMT_STRUCT(netblock_v4_list,
-    char     in_name[32];
+    unsigned in_list_id;
     uint32_t out_start_ip;
+    uint32_t out_end_ip;
     uint8_t  out_prefix_len;
   );
 
   STMT_STRUCT(netblock_v6_list,
-    char              in_name[32];
+    unsigned          in_list_id;
     unsigned __int128 out_start_ip;
+    unsigned __int128 out_end_ip;
+    uint8_t           out_prefix_len;
+  );
+
+  STMT_STRUCT(netblock_v4_list_union,
+    unsigned in_list_id;
+    uint32_t out_ip;
+    uint8_t  out_prefix_len;
+  );
+
+  STMT_STRUCT(netblock_v6_list_union,
+    unsigned          in_list_id;
+    unsigned __int128 out_ip;
     uint8_t           out_prefix_len;
   );
 }
 DBQueryData;
 
 #define STATEMENTS(X) \
-  X(registrar_by_name  ) \
-  X(registrar_insert   ) \
-  X(lookup_ipv4_by_addr) \
-  X(lookup_ipv6_by_addr) \
-  X(netblock_v4_list   ) \
-  X(netblock_v6_list   )
+  X(registrar_by_name     ) \
+  X(registrar_insert      ) \
+  X(lookup_ipv4_by_addr   ) \
+  X(lookup_ipv6_by_addr   ) \
+  X(list_by_name          ) \
+  X(netblock_v4_list      ) \
+  X(netblock_v6_list      ) \
+  X(netblock_v4_list_union) \
+  X(netblock_v6_list_union)
 
 #pragma region registrar_by_name
 DEFAULT_STMT(DBQueryData, registrar_by_name,
@@ -113,8 +136,8 @@ DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
   "SELECT "
     "a.id, "
     "a.registrar_id, "
-    "a.org_id_str, "
-    "b.org_name, "
+    "a.org_handle, "
+    "b.name, "
     "a.start_ip, "
     "a.end_ip, "
     "a.prefix_len, "
@@ -153,7 +176,7 @@ DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
 
   &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                                  },
   &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                        },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_id_str   , .size = sizeof(this->out.org_id_str) },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_handle   , .size = sizeof(this->out.org_handle) },
   &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_name     , .size = sizeof(this->out.org_name  ) },
   &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.start_ip.v4                                         },
   &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.end_ip  .v4                                         },
@@ -184,8 +207,8 @@ DEFAULT_STMT(DBQueryData, lookup_ipv6_by_addr,
   "SELECT "
     "a.id, "
     "a.registrar_id, "
-    "a.org_id_str, "
-    "b.org_name, "
+    "a.org_handle, "
+    "b.name, "
     "a.start_ip, "
     "a.end_ip, "
     "a.prefix_len, "
@@ -223,7 +246,7 @@ DEFAULT_STMT(DBQueryData, lookup_ipv6_by_addr,
 
   &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out.id                                                  },
   &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->out.registrar_id                                        },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_id_str  , .size = sizeof(this->out.org_id_str ) },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_handle  , .size = sizeof(this->out.org_handle ) },
   &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->out.org_name    , .size = sizeof(this->out.org_name   ) },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->out.start_ip.v6 , .size = sizeof(this->out.start_ip.v6) },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->out.end_ip  .v6 , .size = sizeof(this->out.end_ip.v6  ) },
@@ -248,23 +271,56 @@ int rr_query_netblockv6_by_ip(
 }
 #pragma endregion
 
+#pragma region list_by_name
+DEFAULT_STMT(DBQueryData, list_by_name,
+  "SELECT id FROM list WHERE name = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_list_id }
+);
+
+int rr_query_list_by_name(
+  RRDBCon *con,
+  const char *in_name,
+  unsigned *out_list_id)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+
+  strcpy(qd->list_by_name.in_name, in_name);
+  int rc = rr_db_stmt_fetch_one(qd->list_by_name.stmt);
+  if (rc < 1)
+    return rc;
+
+  *out_list_id = qd->list_by_name.out_list_id;
+  return 1;
+}
+#pragma endregion
+
 #pragma region netblock_v4_list
 DEFAULT_STMT(DBQueryData, netblock_v4_list,
-  "SELECT start_ip, prefix_len FROM netblock_v4_list A, list B WHERE B.id = A.list_id AND B.name = ? ORDER BY start_ip ASC",
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_name, .size = sizeof(this->in_name) },
+  "SELECT start_ip, end_ip, prefix_len FROM netblock_v4_list WHERE list_id = ? ORDER BY start_ip ASC",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_list_id },
   RRDB_PARAM_OUT,
   &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->out_start_ip   },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->out_end_ip     },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_prefix_len }
 );
 
-bool rr_query_netblockv4_list_start(RRDBCon *con, const char *name)
+bool rr_query_netblockv4_list_start(RRDBCon *con, unsigned in_list_id, bool store)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
-  strncpy(qd->netblock_v4_list.in_name, name, sizeof(qd->netblock_v4_list.in_name));
-  return rr_db_stmt_query(qd->netblock_v4_list.stmt);
+  qd->netblock_v4_list.in_list_id = in_list_id;
+  bool ret = rr_db_stmt_query(qd->netblock_v4_list.stmt);
+  if (!ret)
+    return false;
+
+  if (store && !rr_db_stmt_store(qd->netblock_v4_list.stmt))
+    return false;
+
+  return true;
 }
 
-int rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint8_t *out_prefix_len)
+int rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint32_t *out_end_ip, uint8_t *out_prefix_len)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
   int rc = rr_db_stmt_fetch(qd->netblock_v4_list.stmt);
@@ -272,6 +328,7 @@ int rr_query_netblockv4_list_fetch(RRDBCon *con, uint32_t *out_start_ip, uint8_t
     return rc;
 
   *out_start_ip   = qd->netblock_v4_list.out_start_ip;
+  *out_end_ip     = qd->netblock_v4_list.out_end_ip;
   *out_prefix_len = qd->netblock_v4_list.out_prefix_len;
   return 1;
 }
@@ -285,21 +342,29 @@ void rr_query_netblockv4_list_end(RRDBCon *con)
 
 #pragma region netblock_v6_list
 DEFAULT_STMT(DBQueryData, netblock_v6_list,
-  "SELECT start_ip, prefix_len FROM netblock_v6_list A, list B WHERE B.id = A.list_id AND B.name = ? ORDER BY start_ip ASC",
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_name, .size = sizeof(this->in_name) },
+  "SELECT start_ip, end_ip, prefix_len FROM netblock_v6_list WHERE list_id = ? ORDER BY start_ip ASC",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_list_id },
   RRDB_PARAM_OUT,
-  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->out_start_ip  , .size = sizeof(this->out_start_ip) },
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->out_start_ip, .size = sizeof(this->out_start_ip) },
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->out_end_ip  , .size = sizeof(this->out_end_ip  ) },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->out_prefix_len }
 );
 
-bool rr_query_netblockv6_list_start(RRDBCon *con, const char *name)
+bool rr_query_netblockv6_list_start(RRDBCon *con, unsigned in_list_id, bool store)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
-  strncpy(qd->netblock_v6_list.in_name, name, sizeof(qd->netblock_v6_list.in_name));
-  return rr_db_stmt_query(qd->netblock_v6_list.stmt);
+  qd->netblock_v6_list.in_list_id = in_list_id;
+  bool ret =  rr_db_stmt_query(qd->netblock_v6_list.stmt);
+  if (!ret)
+    return false;
+
+  if (store && !rr_db_stmt_store(qd->netblock_v6_list.stmt))
+    return false;
+
+  return true;
 }
 
-int rr_query_netblockv6_list_fetch(RRDBCon *con, unsigned __int128 *out_start_ip, uint8_t *out_prefix_len)
+int rr_query_netblockv6_list_fetch(RRDBCon *con, unsigned __int128 *out_start_ip, unsigned __int128 *out_end_ip, uint8_t *out_prefix_len)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
   int rc = rr_db_stmt_fetch(qd->netblock_v6_list.stmt);
@@ -307,6 +372,7 @@ int rr_query_netblockv6_list_fetch(RRDBCon *con, unsigned __int128 *out_start_ip
     return rc;
 
   *out_start_ip   = qd->netblock_v6_list.out_start_ip;
+  *out_end_ip     = qd->netblock_v6_list.out_end_ip;
   *out_prefix_len = qd->netblock_v6_list.out_prefix_len;
   return 1;
 }
@@ -315,6 +381,90 @@ void rr_query_netblockv6_list_end(RRDBCon *con)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
   rr_db_stmt_close(qd->netblock_v6_list.stmt);
+}
+#pragma endregion
+
+#pragma region netblock_v4_list_union
+DEFAULT_STMT(DBQueryData, netblock_v4_list_union,
+  "SELECT ip, prefix_len FROM netblock_v4_list_union WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_list_id },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->out_ip         },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_prefix_len }
+);
+
+bool rr_query_netblockv4_list_union_start(RRDBCon *con, unsigned in_list_id, bool store)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  qd->netblock_v4_list_union.in_list_id = in_list_id;
+  bool ret = rr_db_stmt_query(qd->netblock_v4_list_union.stmt);
+  if (!ret)
+    return false;
+
+  if (store && !rr_db_stmt_store(qd->netblock_v4_list_union.stmt))
+    return false;
+
+  return true;
+}
+
+int rr_query_netblockv4_list_union_fetch(RRDBCon *con, uint32_t *out_ip, uint8_t *out_prefix_len)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  int rc = rr_db_stmt_fetch(qd->netblock_v4_list_union.stmt);
+  if (rc < 1)
+    return rc;
+
+  *out_ip         = qd->netblock_v4_list_union.out_ip;
+  *out_prefix_len = qd->netblock_v4_list_union.out_prefix_len;
+  return 1;
+}
+
+void rr_query_netblockv4_list_union_end(RRDBCon *con)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  rr_db_stmt_close(qd->netblock_v4_list.stmt);
+}
+#pragma endregion
+
+#pragma region netblock_v6_list
+DEFAULT_STMT(DBQueryData, netblock_v6_list_union,
+  "SELECT ip, prefix_len FROM netblock_v6_list_union WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_list_id },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->out_ip, .size = sizeof(this->out_ip) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->out_prefix_len }
+);
+
+bool rr_query_netblockv6_list_union_start(RRDBCon *con, unsigned in_list_id, bool store)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  qd->netblock_v6_list_union.in_list_id = in_list_id;
+  bool ret =  rr_db_stmt_query(qd->netblock_v6_list_union.stmt);
+  if (!ret)
+    return false;
+
+  if (store && !rr_db_stmt_store(qd->netblock_v6_list_union.stmt))
+    return false;
+
+  return true;
+}
+
+int rr_query_netblockv6_list_union_fetch(RRDBCon *con, unsigned __int128 *out_ip, uint8_t *out_prefix_len)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  int rc = rr_db_stmt_fetch(qd->netblock_v6_list_union.stmt);
+  if (rc < 1)
+    return rc;
+
+  *out_ip         = qd->netblock_v6_list_union.out_ip;
+  *out_prefix_len = qd->netblock_v6_list_union.out_prefix_len;
+  return 1;
+}
+
+void rr_query_netblockv6_list_union_end(RRDBCon *con)
+{
+  DBQueryData *qd = rr_db_get_con_gudata(con);
+  rr_db_stmt_close(qd->netblock_v6_list_union.stmt);
 }
 #pragma endregion
 

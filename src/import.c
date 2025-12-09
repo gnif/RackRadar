@@ -68,11 +68,21 @@ typedef struct RRImport
     char in_list_name[32];
   );
 
-  STMT_STRUCT(netblockv4_list_delete,
-    char in_list_name[32];
+  STMT_STRUCT(netblockv4_list_delete      , unsigned in_list_id; );
+  STMT_STRUCT(netblockv6_list_delete      , unsigned in_list_id; );
+  STMT_STRUCT(netblockv4_list_union_delete, unsigned in_list_id; );
+  STMT_STRUCT(netblockv6_list_union_delete, unsigned in_list_id; );
+
+  STMT_STRUCT(netblockv4_list_union_insert,
+    unsigned in_list_id;
+    unsigned in_ip;
+    uint8_t  in_prefix_len;
   );
-  STMT_STRUCT(netblockv6_list_delete,
-    char in_list_name[32];
+
+  STMT_STRUCT(netblockv6_list_union_insert,
+    unsigned in_list_id;
+    unsigned __int128 in_ip;
+    uint8_t  in_prefix_len;
   );
 
   struct
@@ -86,23 +96,27 @@ RRImport;
 RRImport s_import = { 0 };
 
 #define STATEMENTS(X) \
-  X(registrar_insert         ) \
-  X(registrar_update_serial  ) \
-  X(org_insert               ) \
-  X(org_delete_old           ) \
-  X(netblockv4_insert        ) \
-  X(netblockv4_delete_old    ) \
-  X(netblockv4_link_org      ) \
-  X(netblockv6_insert        ) \
-  X(netblockv6_delete_old    ) \
-  X(netblockv6_link_org      ) \
-  X(netblockv4_union_truncate) \
-  X(netblockv6_union_truncate) \
-  X(netblockv4_union_populate) \
-  X(netblockv6_union_populate) \
-  X(list_insert              ) \
-  X(netblockv4_list_delete   ) \
-  X(netblockv6_list_delete   )
+  X(registrar_insert              ) \
+  X(registrar_update_serial       ) \
+  X(org_insert                    ) \
+  X(org_delete_old                ) \
+  X(netblockv4_insert             ) \
+  X(netblockv4_delete_old         ) \
+  X(netblockv4_link_org           ) \
+  X(netblockv6_insert             ) \
+  X(netblockv6_delete_old         ) \
+  X(netblockv6_link_org           ) \
+  X(netblockv4_union_truncate     ) \
+  X(netblockv6_union_truncate     ) \
+  X(netblockv4_union_populate     ) \
+  X(netblockv6_union_populate     ) \
+  X(list_insert                   ) \
+  X(netblockv4_list_delete        ) \
+  X(netblockv6_list_delete        ) \
+  X(netblockv4_list_union_delete  ) \
+  X(netblockv6_list_union_delete  ) \
+  X(netblockv4_list_union_insert  ) \
+  X(netblockv6_list_union_insert  )
 
 #pragma region statements
 DEFAULT_STMT(RRImport, registrar_insert,
@@ -120,8 +134,8 @@ DEFAULT_STMT(RRImport, org_insert,
   "INSERT INTO org ("
     "registrar_id, "
     "serial, "
+    "handle, "
     "name, "
-    "org_name, "
     "descr"
   ") VALUES ("
     "?,"
@@ -130,14 +144,14 @@ DEFAULT_STMT(RRImport, org_insert,
     "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "serial   = VALUES(serial), "
-    "org_name = VALUES(org_name), "
-    "descr    = VALUES(descr)",
+    "serial = VALUES(serial), "
+    "name   = VALUES(name), "
+    "descr  = VALUES(descr)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_UINT,   .bind = &this->in.serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.handle       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.name         },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_name     },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
 );
 
@@ -151,7 +165,7 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
   "INSERT INTO netblock_v4 ("
     "registrar_id, "
     "serial, "
-    "org_id_str, "
+    "org_handle, "
     "start_ip, "
     "end_ip, "
     "prefix_len, "
@@ -173,7 +187,7 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_id_str   },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.startAddr.v4 },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.endAddr  .v4 },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
@@ -191,7 +205,7 @@ DEFAULT_STMT(RRImport, netblockv4_link_org,
   "UPDATE netblock_v4 nb "
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
+    "AND o.handle = nb.org_handle "
     "SET nb.org_id = o.id"
 );
 
@@ -199,7 +213,7 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
   "INSERT INTO netblock_v6 ("
     "registrar_id, "
     "serial, "
-    "org_id_str, "
+    "org_handle, "
     "start_ip, "
     "end_ip, "
     "prefix_len, "
@@ -221,7 +235,7 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_id_str   },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.startAddr.v6, .size = sizeof(this->in.startAddr) },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.endAddr  .v6, .size = sizeof(this->in.endAddr  ) },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
@@ -239,7 +253,7 @@ DEFAULT_STMT(RRImport, netblockv6_link_org,
   "UPDATE netblock_v6 nb "
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "
-    "AND o.name = nb.org_id_str "
+    "AND o.handle = nb.org_handle "
     "SET nb.org_id = o.id"
 );
 
@@ -299,13 +313,37 @@ DEFAULT_STMT(RRImport, list_insert,
 );
 
 DEFAULT_STMT(RRImport, netblockv4_list_delete,
-  "DELETE FROM netblock_v4_list WHERE list_id IN (SELECT id FROM list WHERE name = ?)",
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_list_name }
+  "DELETE FROM netblock_v4_list WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_list_id }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_list_delete,
-  "DELETE FROM netblock_v6_list WHERE list_id IN (SELECT id FROM list WHERE name = ?)",
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in_list_name }
+  "DELETE FROM netblock_v6_list WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_list_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_list_union_delete,
+  "DELETE FROM netblock_v4_list_union WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_list_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_list_union_delete,
+  "DELETE FROM netblock_v6_list_union WHERE list_id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_list_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_list_union_insert,
+  "INSERT INTO netblock_v4_list_union (list_id, ip, prefix_len) VALUES (?, ?, ?)",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->in_list_id    },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &this->in_ip         },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->in_prefix_len }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_list_union_insert,
+  "INSERT INTO netblock_v6_list_union (list_id, ip, prefix_len) VALUES (?, ?, ?)",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_list_id    },
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in_ip, .size = sizeof(this->in_ip) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in_prefix_len }
 );
 #pragma endregion
 
@@ -425,18 +463,160 @@ static bool rr_import_list_insert(const char *in_list_name)
   return rr_db_stmt_execute(s_import.list_insert.stmt, NULL);
 }
 
-static bool rr_import_netblockv4_list_delete(const char *in_list_name)
+static bool rr_import_netblockv4_list_delete(unsigned in_list_id)
 {
-  strcpy(s_import.netblockv4_list_delete.in_list_name, in_list_name);
+  s_import.netblockv4_list_delete.in_list_id = in_list_id;
   return rr_db_stmt_execute(s_import.netblockv4_list_delete.stmt, NULL);
 }
 
-static bool rr_import_netblockv6_list_delete(const char *in_list_name)
+static bool rr_import_netblockv6_list_delete(unsigned in_list_id)
 {
-  strcpy(s_import.netblockv6_list_delete.in_list_name, in_list_name);
+  s_import.netblockv6_list_delete.in_list_id = in_list_id;
   return rr_db_stmt_execute(s_import.netblockv6_list_delete.stmt, NULL);
 }
+
+static bool rr_import_netblockv4_list_union_delete(unsigned in_list_id)
+{
+  s_import.netblockv4_list_union_delete.in_list_id = in_list_id;
+  return rr_db_stmt_execute(s_import.netblockv4_list_union_delete.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_list_union_delete(unsigned in_list_id)
+{
+  s_import.netblockv6_list_union_delete.in_list_id = in_list_id;
+  return rr_db_stmt_execute(s_import.netblockv6_list_union_delete.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned in_ip, uint8_t in_prefix_len)
+{
+  s_import.netblockv4_list_union_insert.in_list_id    = in_list_id;
+  s_import.netblockv4_list_union_insert.in_ip         = in_ip;
+  s_import.netblockv4_list_union_insert.in_prefix_len = in_prefix_len;
+  return rr_db_stmt_execute(s_import.netblockv4_list_union_insert.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned __int128 in_ip, uint8_t in_prefix_len)
+{
+  s_import.netblockv6_list_union_insert.in_list_id    = in_list_id;
+  s_import.netblockv6_list_union_insert.in_ip         = in_ip;
+  s_import.netblockv6_list_union_insert.in_prefix_len = in_prefix_len;
+  return rr_db_stmt_execute(s_import.netblockv6_list_union_insert.stmt, NULL);
+}
+
 #pragma endregion
+
+typedef struct
+{
+  size_t  size;
+  char   *query;
+  off_t   pos;
+}
+QueryBuffer;
+
+static void db_build_list_query_where(ConfigList *cl, QueryBuffer *qb)
+{
+  #define ADD_CONDITION(x, y, z) \
+    if (cl->x ##_ ##y.z) \
+      for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
+        qb->pos += snprintf(qb->query + qb->pos, qb->size - qb->pos, \
+          "%s" #x "." #y " LIKE '%s'", \
+          conditions > 0 ? " OR " : "", \
+          *str \
+        ); \
+
+  bool started = false;
+  if (cl->has_matches)
+  {
+    started = true;
+    qb->query[qb->pos++] = '(';
+
+    int conditions = 0;
+    qb->query[qb->pos++] = '(';
+    #define X(x, y) ADD_CONDITION(x, y, match)
+    CONFIG_LIST_FIELDS
+    #undef X
+    qb->query[qb->pos++] = ')';
+
+    if (cl->has_ignores)
+    {
+      strncpy(qb->query + qb->pos, " AND NOT (", qb->size - qb->pos);
+      qb->pos += 10;
+
+      conditions = 0;
+      #define X(x, y) ADD_CONDITION(x, y, ignore)
+      CONFIG_LIST_FIELDS
+      #undef X
+      qb->query[qb->pos++] = ')';
+    }
+
+    qb->query[qb->pos++] = ')';
+  }
+
+  if (cl->include)
+  {
+    for(const char **include = cl->include; *include; ++include)
+      for(ConfigList *l = g_config.lists; l->name; ++l)
+      {
+        if (strcmp(l->name, *include) == 0)
+        {
+          // prevent infinite recursion
+          if (l->include_seen)
+            break;
+          l->include_seen = true;
+
+          if (started)
+          {
+            strncpy(qb->query + qb->pos, " OR ", qb->size - qb->pos);
+            qb->pos += 4;
+          }
+          db_build_list_query_where(l, qb);
+          started = true;
+          break;
+        }
+      }
+  }
+
+  if (cl->exclude)
+  {
+    if (started)
+    {
+      strncpy(qb->query + qb->pos, " AND NOT (", qb->size - qb->pos);
+      qb->pos += 10;
+    }
+    else
+    {
+      strncpy(qb->query + qb->pos, " NOT (", qb->size - qb->pos);
+      qb->pos += 6;
+    }
+
+    started = false;
+    for(const char **exclude = cl->exclude; *exclude; ++exclude)
+      for(ConfigList *l = g_config.lists; l->name; ++l)
+      {
+        if (strcmp(l->name, *exclude) == 0)
+        {
+          // prevent infinite recursion
+          if (l->exclude_seen)
+            break;
+          l->exclude_seen = true;
+
+          if (started)
+          {
+            strncpy(qb->query + qb->pos, " OR ", qb->size - qb->pos);
+            qb->pos += 4;
+          }
+          db_build_list_query_where(l, qb);
+          started = true;
+          break;
+        }
+      }
+
+    qb->query[qb->pos++] = ')';
+  }
+
+  qb->query[qb->pos] = '\0';
+  #undef ADD_CONDITION
+}
 
 static bool db_init_fn(RRDBCon *con, void **udata)
 {
@@ -453,59 +633,57 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     return false;
   }
 
+  QueryBuffer qb =
+  {
+    .size  = 8192,
+    .query = malloc(8192),
+    .pos   = 0,
+  };
+
+  if (!qb.query)
+  {
+    LOG_ERROR("out of memory");
+    return false;
+  }
+
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
   {
-    #define ADD_CONDITION(x, y, z) \
-      if (cl->x ##_ ##y.z) \
-        for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
-          pos += snprintf(query + pos, sizeof(query) - pos, \
-            "%s" #x "." #y " LIKE '%s'", \
-            conditions > 0 ? " OR " : "", \
-            *str \
-          ); \
-
-    if (!cl->has_matches)
-      continue;
-
-    char query[8192];
     for(int n = 0; n < 2; ++n)
     {
-      off_t pos = 0;
       const char *ver = n == 0 ? "v4" : "v6";
-      pos += snprintf(query + pos, sizeof(query) - pos,
+      size_t start = qb.pos = snprintf(qb.query, qb.size,
         "INSERT INTO netblock_%s_list "
         "SELECT "
           "list.id, "
           "ip.id, "
           "ip.start_ip, "
+          "ip.end_ip, "
           "ip.prefix_len "
         "FROM "
           "netblock_%s     AS ip "
           "RIGHT JOIN list AS list ON list.name = ? "
           "LEFT  JOIN org  AS org  ON org.id    = ip.org_id "
-        "WHERE (",
+        "WHERE ",
         ver,
         ver);
 
-      int conditions = 0;
-      #define X(x, y) ADD_CONDITION(x, y, match)
-      CONFIG_LIST_FIELDS
-      #undef X
-      pos += snprintf(query + pos, sizeof(query) - pos, ")");
+      // reset the seen state
+      for(ConfigList *l = g_config.lists; l->name; ++l)
+        l->include_seen = l->exclude_seen = false;
 
-      if (cl->has_ignores)
-      {
-        pos += snprintf(query + pos, sizeof(query) - pos, " AND NOT (");
-        conditions = 0;
-        #define X(x, y) ADD_CONDITION(x, y, ignore)
-        CONFIG_LIST_FIELDS
-        #undef X
-        pos += snprintf(query + pos, sizeof(query) - pos, ")");
-      }
+      // build the where part of the query
+      db_build_list_query_where(cl, &qb);
+
+      // if the query wasn't built
+      if (start == qb.pos)
+        continue;
+
+      strncpy(qb.query + qb.pos, " ORDER BY ip.start_ip ASC", qb.size - qb.pos);
+      qb.pos += 25;
 
       strcpy(list->in_list_name, cl->name);
-      list->stmt[n] = rr_db_stmt_prepare(con, query,
+      list->stmt[n] = rr_db_stmt_prepare(con, qb.query,
         &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &list->in_list_name },
         NULL
       );
@@ -520,8 +698,8 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     ++list;
   }
 
-  #undef ADD_CONDITION
   #undef CONFIG_LIST_FIELDS
+  free(qb.query);
   return true;
 }
 
@@ -565,6 +743,186 @@ void rr_import_deinit(void)
   rr_download_deinit(&s_import.dl);
 }
 
+static bool rr_emit_ipv4_range_as_cidrs(unsigned list_id, uint32_t start, uint32_t end)
+{
+  uint64_t cur = (uint64_t)start;
+  uint64_t last = (uint64_t)end;
+
+  while (cur <= last)
+  {
+    uint64_t max_size = rr_lowbit_u32((uint32_t)cur);          // alignment-limited
+    uint64_t remain   = last - cur + 1ULL;                     // range-limited
+
+    while (max_size > remain)
+      max_size >>= 1;
+
+    uint8_t prefix_len = (uint8_t)(32u - (uint8_t)__builtin_ctzll(max_size));
+    if (!rr_import_netblockv4_list_union_insert(list_id, cur, prefix_len))
+      return false;
+
+    cur += max_size;
+  }
+
+  return true;
+}
+
+static bool rr_import_netblockv4_list_union_populate(RRDBCon *con, unsigned list_id)
+{
+  uint32_t start_ip, end_ip;
+  uint8_t  prefix_len;
+  uint32_t run_start = 0, run_end = 0;
+  bool     have_run = false;
+
+  if (!rr_query_netblockv4_list_start(con, list_id, true))
+    return false;
+
+  int rc;
+  while ((rc = rr_query_netblockv4_list_fetch(con, &start_ip, &end_ip, &prefix_len)) == 1)
+  {
+    if (!have_run)
+    {
+      run_start = start_ip;
+      run_end   = end_ip;
+      have_run  = 1;
+      continue;
+    }
+
+    if ((uint64_t)start_ip <= (uint64_t)run_end + 1ULL)
+    {
+      if (end_ip > run_end)
+        run_end = end_ip;
+      continue;
+    }
+
+    if (!rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end))
+    {
+      rr_query_netblockv4_list_end(con);
+      return false;
+    }
+
+    run_start = start_ip;
+    run_end   = end_ip;
+  }
+
+  if (have_run && !rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end))
+  {
+    rr_query_netblockv4_list_end(con);
+    return false;
+  }
+
+  if (rc < 0)
+  {
+    rr_query_netblockv4_list_end(con);
+    return false;
+  }
+
+  rr_query_netblockv4_list_end(con);
+  return true;
+}
+
+static bool rr_emit_ipv6_range_as_cidrs(unsigned list_id, unsigned __int128 start_raw, unsigned __int128 end_raw)
+{
+  const unsigned __int128 U128_MAX = (unsigned __int128)-1;
+
+  // Convert once; do ALL math/comparisons in BE-numeric.
+  unsigned __int128 start = rr_raw_to_be(start_raw);
+  unsigned __int128 end   = rr_raw_to_be(end_raw);
+
+  if (start > end)
+    return true;
+
+  // ::/0
+  if (start == 0 && end == U128_MAX)
+    return rr_import_netblockv6_list_union_insert(list_id, (unsigned __int128)0, (uint8_t)0);
+
+  unsigned __int128 cur  = start;
+  unsigned __int128 last = end;
+
+  while (cur <= last)
+  {
+    unsigned __int128 remain = (last - cur) + 1;   // safe (not the ::/0 case)
+
+    uint8_t tz  = rr_u128_ctz_be(cur);             // alignment limit (as exponent)
+    uint8_t msb = rr_u128_msb_be(remain);          // range limit (as exponent)
+    uint8_t exp = (tz < msb) ? tz : msb;
+
+    unsigned __int128 block_size = ((unsigned __int128)1 << exp);
+    unsigned __int128 block_end  = cur + block_size - 1;
+
+    // Convert back to RAW(network bytes) for your CIDR helper + insert
+    unsigned __int128 cur_raw      = rr_be_to_raw(cur);
+    unsigned __int128 block_end_raw= rr_be_to_raw(block_end);
+
+    uint8_t prefix_len = rr_ipv6_to_cidr(cur_raw, block_end_raw);
+
+    if (!rr_import_netblockv6_list_union_insert(list_id, cur_raw, prefix_len))
+      return false;
+
+    cur += block_size;
+  }
+
+  return true;
+}
+
+static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, unsigned list_id)
+{
+  unsigned __int128 start_raw, end_raw;
+  uint8_t  prefix_len;
+
+  const unsigned __int128 U128_MAX = (unsigned __int128)-1;
+
+  unsigned __int128 run_start = 0, run_end = 0; // BE-numeric domain
+  bool have_run = false;
+
+  if (!rr_query_netblockv6_list_start(con, list_id, true))
+    return false;
+
+  int rc;
+  while ((rc = rr_query_netblockv6_list_fetch(con, &start_raw, &end_raw, &prefix_len)) == 1)
+  {
+    (void)prefix_len;
+
+    unsigned __int128 start = rr_raw_to_be(start_raw);
+    unsigned __int128 end   = rr_raw_to_be(end_raw);
+
+    if (!have_run)
+    {
+      run_start = start;
+      run_end   = end;
+      have_run  = true;
+      continue;
+    }
+
+    // overlap OR adjacent (guard +1 overflow)
+    bool overlaps = (start <= run_end);
+    bool adjacent = (run_end != U128_MAX) && (start == run_end + 1);
+
+    if (overlaps || adjacent)
+    {
+      if (end > run_end) run_end = end;
+      continue;
+    }
+
+    if (!rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end)))
+    {
+      rr_query_netblockv6_list_end(con);
+      return false;
+    }
+
+    run_start = start;
+    run_end   = end;
+  }
+
+  if (have_run && !rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end)))
+  {
+    rr_query_netblockv6_list_end(con);
+    return false;
+  }
+
+  rr_query_netblockv6_list_end(con);
+  return (rc >= 0);
+}
+
 static bool rr_import_build_lists_internal(RRDBCon *con)
 {
   if (!g_config.lists)
@@ -574,19 +932,27 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
   for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list->stmt[0] && list->stmt[1]; ++list)
   {
     LOG_INFO("  Building: %s", list->in_list_name);
+    unsigned list_id;
     if (
       !rr_db_start(con) ||
       !rr_import_list_insert(list->in_list_name) ||
-      !rr_import_netblockv4_list_delete(list->in_list_name) ||
-      !rr_import_netblockv6_list_delete(list->in_list_name) ||
+      rr_query_list_by_name(con, list->in_list_name, &list_id) != 1 ||
+      !rr_import_netblockv4_list_delete(list_id) ||
+      !rr_import_netblockv6_list_delete(list_id) ||
       !rr_db_stmt_execute(list->stmt[0], NULL) ||
       !rr_db_stmt_execute(list->stmt[1], NULL) ||
+      !rr_import_netblockv4_list_union_delete  (list_id) ||
+      !rr_import_netblockv6_list_union_delete  (list_id) ||
+      !rr_import_netblockv4_list_union_populate(con, list_id) ||
+      !rr_import_netblockv6_list_union_populate(con, list_id) ||
       !rr_db_commit(con))
     {
+      rr_db_rollback(con);
       LOG_ERROR("failed");
       return false;
     }
   }
+
   LOG_INFO("done");
   return true;
 }

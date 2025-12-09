@@ -14,7 +14,7 @@
   SETTING_INT(http.port    , 8888       )
 
 #define CONFIG_LIST_FIELDS \
-  X(org, org    ) \
+  X(org, handle ) \
   X(org, name   ) \
   X(org, descr  ) \
   X(ip , netname) \
@@ -35,6 +35,8 @@ typedef struct ConfigList
   const char **exclude;
   bool has_matches;
   bool has_ignores;
+  bool include_seen;
+  bool exclude_seen;
   CONFIG_LIST_FIELDS
 }
 ConfigList;

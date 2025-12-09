@@ -75,15 +75,15 @@ static int http_handler_ip(struct MHD_Connection *con, const char *uri)
 
   char * buffer = malloc(16384);
   int n = snprintf(buffer, 16384,
-    "netblock: %s/%d\n"
-    "netname : %s\n"
-    "org     : %s\n"
-    "org_name: %s\n"
-    "descr   : %s\n",
+    "netblock  : %s/%d\n"
+    "netname   : %s\n"
+    "org_handle: %s\n"
+    "org_name  : %s\n"
+    "descr     : %s\n",
     ipstring,
     info.prefix_len,
     info.netname,
-    info.org_id_str,
+    info.org_handle,
     info.org_name,
     info.descr
   );
@@ -98,22 +98,22 @@ static int http_handler_ip(struct MHD_Connection *con, const char *uri)
 static ssize_t http_handler_list_v4_cb_reader(void *cls, uint64_t pos, char *buf, size_t max)
 {
   RRDBCon *dbcon = cls;
-  uint32_t start_ip;
+  uint32_t ip;
   uint8_t  prefix_len;
 
   const size_t maxLineLen = 19; //ipv4 + / + 2 + \n
   ssize_t out = 0;
   while(max >= maxLineLen)
   {
-    int rc = rr_query_netblockv4_list_fetch(dbcon, &start_ip, &prefix_len);
+    int rc = rr_query_netblockv4_list_union_fetch(dbcon, &ip, &prefix_len);
     if (rc == 0)
       break;
 
     if (rc < 0)
       return MHD_CONTENT_READER_END_WITH_ERROR;
 
-    start_ip = htonl(start_ip);
-    inet_ntop(AF_INET, &start_ip, buf, max);
+    ip = htonl(ip);
+    inet_ntop(AF_INET, &ip, buf, max);
     size_t len = strlen(buf);
     len += sprintf(buf + len, "/%d\n", prefix_len);
 
@@ -131,7 +131,7 @@ static ssize_t http_handler_list_v4_cb_reader(void *cls, uint64_t pos, char *buf
 static void http_handler_list_v4_cb_free(void *cls)
 {
   RRDBCon *dbcon = cls;
-  rr_query_netblockv4_list_end(dbcon);
+  rr_query_netblockv4_list_union_end(dbcon);
   rr_db_put(&dbcon);
 }
 
@@ -154,7 +154,14 @@ static int http_handler_list_v4(struct MHD_Connection *con, const char *uri)
   if (!rr_db_get(&dbcon))
     return 500;
 
-  if (!rr_query_netblockv4_list_start(dbcon, uri))
+  unsigned list_id;
+  if (rr_query_list_by_name(dbcon, uri, &list_id) != 1)
+  {
+    rr_db_put(&dbcon);
+    return 500;
+  }
+
+  if (!rr_query_netblockv4_list_union_start(dbcon, list_id, false))
   {
     rr_db_put(&dbcon);
     return 500;
@@ -162,7 +169,7 @@ static int http_handler_list_v4(struct MHD_Connection *con, const char *uri)
 
   struct MHD_Response *resp = MHD_create_response_from_callback(
     MHD_SIZE_UNKNOWN,
-    1024,
+    64 * 1024,
     http_handler_list_v4_cb_reader,
     dbcon,
     http_handler_list_v4_cb_free);
@@ -183,21 +190,21 @@ static int http_handler_list_v4(struct MHD_Connection *con, const char *uri)
 static ssize_t http_handler_list_v6_cb_reader(void *cls, uint64_t pos, char *buf, size_t max)
 {
   RRDBCon *dbcon = cls;
-  unsigned __int128 start_ip;
+  unsigned __int128 ip;
   uint8_t  prefix_len;
 
   const size_t maxLineLen = 44; //ipv6 + / + 3 + \n
   ssize_t out = 0;
   while(max >= maxLineLen)
   {
-    int rc = rr_query_netblockv6_list_fetch(dbcon, &start_ip, &prefix_len);
+    int rc = rr_query_netblockv6_list_union_fetch(dbcon, &ip, &prefix_len);
     if (rc == 0)
       break;
 
     if (rc < 0)
       return MHD_CONTENT_READER_END_WITH_ERROR;
 
-    inet_ntop(AF_INET6, &start_ip, buf, max);
+    inet_ntop(AF_INET6, &ip, buf, max);
     size_t len = strlen(buf);
     len += sprintf(buf + len, "/%d\n", prefix_len);
 
@@ -215,7 +222,7 @@ static ssize_t http_handler_list_v6_cb_reader(void *cls, uint64_t pos, char *buf
 static void http_handler_list_v6_cb_free(void *cls)
 {
   RRDBCon *dbcon = cls;
-  rr_query_netblockv6_list_end(dbcon);
+  rr_query_netblockv6_list_union_end(dbcon);
   rr_db_put(&dbcon);
 }
 
@@ -238,7 +245,14 @@ static int http_handler_list_v6(struct MHD_Connection *con, const char *uri)
   if (!rr_db_get(&dbcon))
     return 500;
 
-  if (!rr_query_netblockv6_list_start(dbcon, uri))
+  unsigned list_id;
+  if (rr_query_list_by_name(dbcon, uri, &list_id) != 1)
+  {
+    rr_db_put(&dbcon);
+    return 500;
+  }
+
+  if (!rr_query_netblockv6_list_union_start(dbcon, list_id, false))
   {
     rr_db_put(&dbcon);
     return 500;

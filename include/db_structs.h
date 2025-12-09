@@ -30,9 +30,9 @@ typedef struct RRDBOrg
 {
   unsigned registrar_id;
   unsigned serial;
-  char     name    [32];
-  char     org_name[1024];
-  char     descr   [8192];
+  char     handle[32];
+  char     name  [1024];
+  char     descr [8192];
 }
 RRDBOrg;
 
@@ -47,7 +47,7 @@ typedef struct RRDBNetBlock
 {
   unsigned registrar_id;
   unsigned serial;
-  char     org_id_str[33];
+  char     org_handle[33];
   RRDBAddr startAddr;
   RRDBAddr endAddr;
   uint8_t  prefixLen;
@@ -60,7 +60,7 @@ typedef struct RRDBIPInfo
 {
   unsigned long long id;
   unsigned registrar_id;
-  char     org_id_str[33];
+  char     org_handle[33];
   char     org_name[1024];
   RRDBAddr start_ip;
   RRDBAddr end_ip;
