@@ -3,35 +3,64 @@ database:
   host: "127.0.0.1";
   port: 3306;
   user: "rackradar";
-  pass: "rackradar";  
+  pass: "rackradar";
 };
 
 sources:
 {
   RIPE:
   {
-    type    : "RPSL";
-    freqency: 86400;    
-    url     : "ftp://ftp.ripe.net/ripe/dbase/ripe.db.gz";
+    type     : "RPSL";
+    frequency: 86400;
+    url      : "ftp://ftp.ripe.net/ripe/dbase/ripe.db.gz";
   };
 
 #  APNIC BulkWhois required authentication
 #  See: https://www.apnic.net/manage-ip/using-whois/bulk-access/
 #  APNIC:
 #  {
-#    type    : "RPSL";
-#    freqency: 86400;
-#    url     : "http://ftp.apnic.net/whois-data/APNIC/apnic.RPSL.db.gz";
-#    user    : "username";
-#    pass    : "password";
+#    type     : "RPSL";
+#    frequency: 86400;
+#    url      : "http://ftp.apnic.net/whois-data/APNIC/apnic.RPSL.db.gz";
+#    user     : "username";
+#    pass     : "password";
 #  };
 
 #  ARIN BulkWhois requires an API key
 #  See: https://www.arin.net/reference/research/bulkwhois/
 #  ARIN:
 #  {
-#    type    : "ARIN";
-#    freqency: 86400;
-#    url     : "https://account.arin.net/public/secure/downloads/bulkwhois?apikey=<PUT YOUR KEY HERE>";
+#    type     : "ARIN";
+#    frequency: 86400;
+#    url      : "https://account.arin.net/public/secure/downloads/bulkwhois?apikey=<PUT YOUR KEY HERE>";
 #  };
+};
+
+lists:
+{
+  OVH:
+  {
+    include: [];
+    exclude: [];
+    netname:
+    {
+      match : [ "OVH-%", "OVH_%" ];
+      ignore: [ "OVHTelecom" ];
+    };
+    descr:
+    {
+      match : [];
+      ignore: [];
+    };
+    org_name:
+    {
+      match : [ "OVH %", "OVHCloud%" ];
+      ignore: [];
+    };
+    org:
+    {
+      match : [];
+      ignore: [];
+    };
+  };
 };
