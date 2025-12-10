@@ -26,6 +26,7 @@ AddrPair;
 struct ProcessState
 {
   XML_Parser p;
+  bool faulted;
 
   unsigned registrar_id;
   unsigned serial;
@@ -108,6 +109,7 @@ static void add_netblock(struct ProcessState *state)
     {
       LOG_ERROR("out of memory");
       XML_StopParser(state->p, XML_FALSE);
+      state->faulted = true;
       return;
     }
     state->addrs = new;
@@ -158,6 +160,7 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
       {
         LOG_ERROR("expected <bulkwhois> but instead got <%s>", name);
         XML_StopParser(state->p, XML_FALSE);
+        state->faulted = true;
         return;
       }
       break;
@@ -265,11 +268,13 @@ static void xml_on_end(void *userData, const char *name)
     case 0:
       LOG_ERROR("invalid schema");
       XML_StopParser(state->p, XML_FALSE);
+      state->faulted = true;
       return;
 
     // bulkwhois
     case 1:
       XML_StopParser(state->p, XML_TRUE);
+      state->faulted = true;
       return;
 
     case 2:
@@ -289,6 +294,7 @@ static void xml_on_end(void *userData, const char *name)
           if (!rr_import_org_insert(&state->x.org))
           {
             XML_StopParser(state->p, XML_FALSE);
+            state->faulted = true;
             return;
           }
           break;
@@ -317,6 +323,7 @@ static void xml_on_end(void *userData, const char *name)
             if (!result)
             {
               XML_StopParser(state->p, XML_FALSE);
+              state->faulted = true;
               return;
             };
           }
@@ -379,11 +386,11 @@ static void log_xml_error(struct ProcessState *state, const char *context)
 
   if (err == XML_ERROR_NONE)
   {
-    LOG_ERROR("%s", context);
+    LOG_WARN("%s", context);
     return;
   }
 
-  LOG_ERROR(
+  LOG_WARN(
     "%s: %s at line %lu column %lu", context, XML_ErrorString(err),
     XML_GetCurrentLineNumber(state->p), XML_GetCurrentColumnNumber(state->p));
 }
@@ -453,7 +460,13 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
       if (XML_Parse(state.p, buf, 0, XML_TRUE) == XML_STATUS_ERROR)
       {
         log_xml_error(&state, "XML_Parse failed on final chunk");
-        goto err_xml_parser;
+        if (state.faulted)
+        {
+          LOG_ERROR("dangerous fault, not continuing");
+          goto err_xml_parser;
+        }
+        else
+          LOG_WARN("no internal fault, continuing anyway");
       }
       break;
     }
