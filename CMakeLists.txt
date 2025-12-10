@@ -17,6 +17,7 @@ add_compile_options(
   "-Wextra"
   "-Wno-sign-compare"
   "-Wno-unused-parameter"
+  "-Wno-unknown-pragmas"
   "$<$<COMPILE_LANGUAGE:C>:-Wstrict-prototypes>"
   "$<$<C_COMPILER_ID:GNU>:-Wimplicit-fallthrough=2>"
   "-Werror"

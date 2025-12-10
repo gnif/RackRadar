@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdalign.h>
 #include <arpa/inet.h>
 
 #define ARRAY_SIZE(x) (sizeof((x)) / sizeof(*(x)))
