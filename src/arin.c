@@ -373,6 +373,21 @@ static void xml_on_text(void *userData, const XML_Char *s, int len)
   *state->textPtr   = '\0';
 }
 
+static void log_xml_error(struct ProcessState *state, const char *context)
+{
+  enum XML_Error err = XML_GetErrorCode(state->p);
+
+  if (err == XML_ERROR_NONE)
+  {
+    LOG_ERROR("%s", context);
+    return;
+  }
+
+  LOG_ERROR(
+    "%s: %s at line %lu column %lu", context, XML_ErrorString(err),
+    XML_GetCurrentLineNumber(state->p), XML_GetCurrentColumnNumber(state->p));
+}
+
 bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
   unsigned registrar_id, unsigned new_serial)
 {
@@ -437,7 +452,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
     {
       if (XML_Parse(state.p, buf, 0, XML_TRUE) == XML_STATUS_ERROR)
       {
-        LOG_ERROR("XML_Parse failed");
+        log_xml_error(&state, "XML_Parse failed on final chunk");
         goto err_xml_parser;
       }
       break;
@@ -445,7 +460,7 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
 
     if (XML_Parse(state.p, buf, n, XML_FALSE) == XML_STATUS_ERROR)
     {
-      LOG_ERROR("XML_Parse failed");
+      log_xml_error(&state, "XML_Parse failed during streaming");
       goto err_xml_parser;
     }
   }
