@@ -72,8 +72,8 @@ static bool rr_config_read_string_array(const config_setting_t *array, const cha
 
 static bool rr_config_read_list_filter(const config_setting_t *filter, ConfigFilter *out)
 {
-  config_setting_t *match  = config_setting_lookup(filter, "match" );
-  config_setting_t *ignore = config_setting_lookup(filter, "ignore");
+  const config_setting_t *match  = config_setting_lookup(filter, "match" );
+  const config_setting_t *ignore = config_setting_lookup(filter, "ignore");
 
   if (match && !rr_config_read_string_array(match, &out->match))
   {
@@ -177,8 +177,8 @@ bool rr_config_init(void)
     const config_setting_t *s = config_setting_get_elem(lists, i);
 
     list->name = config_setting_name(s);
-    config_setting_t *include  = config_setting_lookup(s, "include" );
-    config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
+    const config_setting_t *include  = config_setting_lookup(s, "include" );
+    const config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
 
     if (include && !rr_config_read_string_array(include, &list->include))
     {
@@ -193,7 +193,7 @@ bool rr_config_init(void)
     }
 
     #define LOAD_FILTER(x) \
-      config_setting_t *x = config_setting_lookup(s, #x); \
+      const config_setting_t *x = config_setting_lookup(s, #x); \
       if (x && !rr_config_read_list_filter(x, &list->x)) \
       { \
         LOG_ERROR("lists.%s." #x " failed to load", list->name); \
