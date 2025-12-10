@@ -1,0 +1,17 @@
+[Unit]
+Description=RackRadar IP intelligence service
+After=network-online.target mariadb.service mysqld.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rackradar
+Group=rackradar
+ExecStart=/usr/local/bin/RackRadar
+Restart=on-failure
+RestartSec=5
+# RackRadar reads its configuration from /etc/rackradar/main.cfg.
+# Ensure the database and configuration are available before starting.
+
+[Install]
+WantedBy=multi-user.target
