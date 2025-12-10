@@ -455,7 +455,13 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
       goto err_xml_parser;
     }
 
-    if (XML_Parse(state.p, buf, n, (n == 0) ? XML_TRUE : XML_FALSE) == XML_STATUS_ERROR)
+    enum XML_Status st = XML_Parse(state.p, buf, n, (n == 0) ? XML_TRUE : XML_FALSE);
+
+    // stopping when we see the </bulkwhois> results in this
+    if (st == XML_STATUS_SUSPENDED)
+      break;
+
+    if (st == XML_STATUS_ERROR)
     {
       if (n == 0)
       {
