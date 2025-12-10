@@ -352,6 +352,11 @@ static void httpd_panic_handler(
   LOG_ERROR("%s:%u - %s", file, line, reason);
 }
 
+static void rr_http_noop_free(void *cls)
+{
+  (void)cls;
+}
+
 bool rr_http_init(void)
 {
   static const char *r400 = "400 - Bad Request";
@@ -359,17 +364,22 @@ bool rr_http_init(void)
   static const char *r405 = "405 - Method Not Allowed";
   static const char *r500 = "500 - Internal Server Error";
 
+  /*
+    MHD_create_response_from_buffer_static doesn't exist in older version of microhttpd so we
+    emulate it by providing a no-op free callback
+  */
+
   s_http.response.r400 =
-    MHD_create_response_from_buffer_static(strlen(r400), r400);
+    MHD_create_response_from_buffer_with_free_callback(strlen(r400), (char *)r400, rr_http_noop_free);
   MHD_add_response_header(s_http.response.r400, "Content-Type", "text/plain");
   s_http.response.r404 =
-    MHD_create_response_from_buffer_static(strlen(r404), r404);
+    MHD_create_response_from_buffer_with_free_callback(strlen(r404), (char *)r404, rr_http_noop_free);
   MHD_add_response_header(s_http.response.r404, "Content-Type", "text/plain");
   s_http.response.r405 =
-    MHD_create_response_from_buffer_static(strlen(r405), r405);
+    MHD_create_response_from_buffer_with_free_callback(strlen(r405), (char *)r405, rr_http_noop_free);
   MHD_add_response_header(s_http.response.r405, "Content-Type", "text/plain");
   s_http.response.r500 =
-    MHD_create_response_from_buffer_static(strlen(r500), r500);
+    MHD_create_response_from_buffer_with_free_callback(strlen(r500), (char *)r500, rr_http_noop_free);
   MHD_add_response_header(s_http.response.r500, "Content-Type", "text/plain");
 
   MHD_set_panic_func(httpd_panic_handler, NULL);
