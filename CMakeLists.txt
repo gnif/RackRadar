@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10.0)
 project(RackRadar VERSION 0.1.0 LANGUAGES C)
 
+include(GNUInstallDirs)
+
 include(FindPkgConfig)
 pkg_check_modules(LIBCONFIG REQUIRED IMPORTED_TARGET "libconfig")
 pkg_check_modules(MARIADB_CLIENT REQUIRED IMPORTED_TARGET "libmariadb")
@@ -67,4 +69,12 @@ target_link_libraries(RackRadar
   ${Iconv_LIBRARIES}
   ${LIBMICROHTTPD_LIBRARIES}
   pthread
+)
+
+install(TARGETS RackRadar
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
+
+install(FILES rackradar.service
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/systemd/system
 )
