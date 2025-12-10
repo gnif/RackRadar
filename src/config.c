@@ -174,7 +174,7 @@ bool rr_config_init(void)
   ConfigList *list = g_config.lists;
   for (unsigned i = 0; i < len; ++i)
   {
-    const config_setting_t *s = config_setting_get_elem(lists, i);
+    config_setting_t *s = config_setting_get_elem(lists, i);
 
     list->name = config_setting_name(s);
     config_setting_t *include  = config_setting_lookup(s, "include" );
