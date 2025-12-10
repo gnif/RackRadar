@@ -1,8 +1,3 @@
-DROP TABLE IF EXISTS netblock_v6;
-DROP TABLE IF EXISTS netblock_v4;
-DROP TABLE IF EXISTS org;
-DROP TABLE IF EXISTS registrar;
-
 CREATE TABLE IF NOT EXISTS registrar
 (
   id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -12,7 +7,7 @@ CREATE TABLE IF NOT EXISTS registrar
 
   PRIMARY KEY(id),
 
-  CONSTRAINT uk_name
+  CONSTRAINT uk_registrar_name
     UNIQUE INDEX(name)
 )
 ENGINE          = InnoDB
@@ -32,7 +27,7 @@ CREATE TABLE IF NOT EXISTS org
 
   KEY idx_serial(serial),
 
-  CONSTRAINT uk_registrar_id_handle
+  CONSTRAINT uk_org_registrar_id_handle
     UNIQUE INDEX(registrar_id, handle),
 
   CONSTRAINT fk_org_registrar
@@ -66,13 +61,13 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
 
-  CONSTRAINT uk_constraint
+  CONSTRAINT uk_netblock_v4_constraint
     UNIQUE INDEX (registrar_id, org_handle, start_ip, end_ip),
 
-  CONSTRAINT chk_range  CHECK (start_ip <= end_ip),
-  CONSTRAINT chk_prefix CHECK (prefix_len BETWEEN 0 AND 32),
+  CONSTRAINT chk_netblock_v4_range  CHECK (start_ip <= end_ip),
+  CONSTRAINT chk_netblock_v4_prefix CHECK (prefix_len BETWEEN 0 AND 32),
 
-  CONSTRAINT fk_nb_registrar
+  CONSTRAINT fk_netblock_v4_registrar
     FOREIGN KEY (registrar_id) REFERENCES registrar(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
@@ -86,7 +81,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4_union
   end_ip   INT UNSIGNED NOT NULL,
   PRIMARY KEY (start_ip),
   KEY idx_end (end_ip),
-  CONSTRAINT chk_union CHECK (start_ip <= end_ip)
+  CONSTRAINT chk_netblock_v4_union_union CHECK (start_ip <= end_ip)
 )
 ENGINE          = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -114,16 +109,16 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
 
-  CONSTRAINT uk_constraint
+  CONSTRAINT uk_netblock_v6_constraint
     UNIQUE INDEX (registrar_id, org_handle, start_ip, end_ip),
 
-  CONSTRAINT chk_prefix_v6 CHECK (prefix_len BETWEEN 0 AND 128),
+  CONSTRAINT chk_netblock_v6_prefix CHECK (prefix_len BETWEEN 0 AND 128),
 
-  CONSTRAINT fk_nb6_registrar
+  CONSTRAINT fk_netblock_v6_registrar
     FOREIGN KEY (registrar_id) REFERENCES registrar(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
 
-  CONSTRAINT fk_nb6_org
+  CONSTRAINT fk_netblock_v6_org
     FOREIGN KEY (org_id) REFERENCES org(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
@@ -137,7 +132,7 @@ CREATE TABLE IF NOT EXISTS netblock_v6_union
   end_ip   BINARY(16) NOT NULL,
   PRIMARY KEY (start_ip),
   KEY idx_end (end_ip),
-  CONSTRAINT chk_union CHECK (start_ip <= end_ip)
+  CONSTRAINT chk_netblock_v6_union_union CHECK (start_ip <= end_ip)
 )
 ENGINE          = InnoDB
 DEFAULT CHARSET = utf8mb4
@@ -150,7 +145,7 @@ CREATE TABLE IF NOT EXISTS list
 
   PRIMARY KEY(id),
 
-  CONSTRAINT uk_name
+  CONSTRAINT uk_list_name
     UNIQUE INDEX(name)
 )
 ENGINE          = InnoDB
@@ -167,14 +162,14 @@ CREATE TABLE IF NOT EXISTS netblock_v4_list
 
   KEY idx_list_start_end(list_id, start_ip, end_ip),
 
-  CONSTRAINT chk_range  CHECK (start_ip <= end_ip),
-  CONSTRAINT chk_prefix CHECK (prefix_len BETWEEN 0 AND 32),
+  CONSTRAINT chk_netblock_v4_list_range  CHECK (start_ip <= end_ip),
+  CONSTRAINT chk_netblock_v4_list_prefix CHECK (prefix_len BETWEEN 0 AND 32),
 
-  CONSTRAINT fk_nb_list
+  CONSTRAINT fk_netblock_v4_list_list
     FOREIGN KEY (list_id) REFERENCES list(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
 
-  CONSTRAINT fk_nb_netblock
+  CONSTRAINT fk_netblock_v4_list_netblock
     FOREIGN KEY (netblock_v4_id) REFERENCES netblock_v4(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
@@ -192,14 +187,14 @@ CREATE TABLE IF NOT EXISTS netblock_v6_list
 
   KEY idx_list_start_end(list_id, start_ip, end_ip),
 
-  CONSTRAINT chk_range  CHECK (start_ip <= end_ip),
-  CONSTRAINT chk_prefix CHECK (prefix_len BETWEEN 0 AND 128),
+  CONSTRAINT chk_netblock_v6_list_range  CHECK (start_ip <= end_ip),
+  CONSTRAINT chk_netblock_v6_list_prefix CHECK (prefix_len BETWEEN 0 AND 128),
 
-  CONSTRAINT fk_nb_list
+  CONSTRAINT fk_netblock_v6_list_list
     FOREIGN KEY (list_id) REFERENCES list(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
 
-  CONSTRAINT fk_nb_netblock
+  CONSTRAINT fk_netblock_v6_list_netblock
     FOREIGN KEY (netblock_v6_id) REFERENCES netblock_v6(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
@@ -217,7 +212,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4_list_union
 
   KEY idx_list (list_id),
 
-  CONSTRAINT fk_nb_list
+  CONSTRAINT fk_netblock_v4_list_union_list
     FOREIGN KEY (list_id) REFERENCES list(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
@@ -235,7 +230,7 @@ CREATE TABLE IF NOT EXISTS netblock_v6_list_union
 
   KEY idx_list (list_id),
 
-  CONSTRAINT fk_nb_list
+  CONSTRAINT fk_netblock_v6_list_union_list
     FOREIGN KEY (list_id) REFERENCES list(id)
     ON UPDATE RESTRICT ON DELETE CASCADE
 )
