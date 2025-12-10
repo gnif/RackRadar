@@ -359,10 +359,10 @@ static void rr_http_noop_free(void *cls)
 
 bool rr_http_init(void)
 {
-  static const char *r400 = "400 - Bad Request";
-  static const char *r404 = "404 - Not Found";
-  static const char *r405 = "405 - Method Not Allowed";
-  static const char *r500 = "500 - Internal Server Error";
+  static const char *r400 = "400 - Bad Request\n";
+  static const char *r404 = "404 - Not Found\n";
+  static const char *r405 = "405 - Method Not Allowed\n";
+  static const char *r500 = "500 - Internal Server Error\n";
 
   /*
     MHD_create_response_from_buffer_static doesn't exist in older version of microhttpd so we
