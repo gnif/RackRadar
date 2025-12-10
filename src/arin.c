@@ -455,9 +455,9 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
       goto err_xml_parser;
     }
 
-    if (n == 0)
+    if (XML_Parse(state.p, buf, n, (n == 0) ? XML_TRUE : XML_FALSE) == XML_STATUS_ERROR)
     {
-      if (XML_Parse(state.p, buf, 0, XML_TRUE) == XML_STATUS_ERROR)
+      if (n == 0)
       {
         log_xml_error(&state, "XML_Parse failed on final chunk");
         if (state.faulted)
@@ -465,17 +465,17 @@ bool rr_arin_import_zip_FILE(const char *registrar, FILE *fp,
           LOG_ERROR("dangerous fault, not continuing");
           goto err_xml_parser;
         }
-        else
-          LOG_WARN("no internal fault, continuing anyway");
-      }
-      break;
-    }
 
-    if (XML_Parse(state.p, buf, n, XML_FALSE) == XML_STATUS_ERROR)
-    {
-      log_xml_error(&state, "XML_Parse failed during streaming");
+        LOG_WARN("no internal fault, continuing anyway");
+        break;
+      }
+
+      log_xml_error(&state, "XML_Parse failed on stream");
       goto err_xml_parser;
     }
+
+    if (n == 0)
+      break;
   }
 
   ret = true;
