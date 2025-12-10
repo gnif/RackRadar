@@ -157,7 +157,8 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
       if (strcmp(name, "bulkwhois") != 0)
       {
         LOG_ERROR("expected <bulkwhois> but instead got <%s>", name);
-        goto err;
+        XML_StopParser(state->p, XML_FALSE);
+        return;
       }
       break;
 
@@ -251,11 +252,6 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
       MATCH("type"        , ipType   );
       break;
   }
-  return;
-err:
-  XML_StopParser(state->p, XML_FALSE);
-  return;
-
 #undef MATCH
 }
 
@@ -273,6 +269,7 @@ static void xml_on_end(void *userData, const char *name)
 
     // bulkwhois
     case 1:
+      XML_StopParser(state->p, XML_TRUE);
       return;
 
     case 2:

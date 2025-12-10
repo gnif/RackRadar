@@ -354,7 +354,15 @@ static int rr_import_registrar_insert(const char *in_name, unsigned *out_registr
   strcpy(s_import.registrar_insert.in_name, in_name);
   int rc = rr_db_stmt_execute(s_import.registrar_insert.stmt, NULL);
   if (rc < 1)
+  {
+    LOG_ERROR(
+      "rr_import_registrar_insert failed:\n"
+      "  name: %s\n",
+      in_name
+    );
+
     return rc;
+  }
 
   *out_registrar_id = rr_db_stmt_insert_id(s_import.registrar_insert.stmt);
   return 1;
@@ -377,6 +385,21 @@ bool rr_import_org_insert(RRDBOrg *in_org)
       ++s_import.stats.newOrgs;
     return true;
   }
+
+  LOG_ERROR(
+    "rr_import_org_insert failed:\n"
+    "  registrar_id: %u\n"
+    "  serial      : %u\n"
+    "  handle      : %s\n"
+    "  name        : %s\n"
+    "  descr       : %s\n",
+    in_org->registrar_id,
+    in_org->serial,
+    in_org->handle,
+    in_org->name,
+    in_org->descr
+  );
+
   return false;
 }
 
@@ -397,6 +420,33 @@ bool rr_import_netblockv4_insert(RRDBNetBlock *in_netblock)
       ++s_import.stats.newIPv4;
     return true;
   }
+
+  char sAddr[32];
+  char eAddr[32];
+  uint32_t s = htonl(in_netblock->startAddr.v4);
+  uint32_t e = htonl(in_netblock->endAddr  .v4);
+  inet_ntop(AF_INET, &s, sAddr, sizeof(sAddr));
+  inet_ntop(AF_INET, &e, eAddr, sizeof(eAddr));
+
+  LOG_ERROR(
+    "rr_import_netblockv4_insert insert failed:\n"
+    "  registrar_id: %u\n"
+    "  serial      : %u\n"
+    "  startAddr   : %s\n"
+    "  endAddr     : %s\n"
+    "  prefix_len  : %u\n"
+    "  netname     : %s\n"
+    "  org_handle  : %s\n"
+    "  descr       : %s\n",
+    in_netblock->registrar_id,
+    in_netblock->serial,
+    sAddr,
+    eAddr,
+    in_netblock->prefixLen,
+    in_netblock->netname,
+    in_netblock->org_handle,
+    in_netblock->descr);
+
   return false;
 }
 
@@ -422,6 +472,31 @@ bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
       ++s_import.stats.newIPv6;
     return true;
   }
+
+  char sAddr[64];
+  char eAddr[64];
+  inet_ntop(AF_INET6, &in_netblock->startAddr.v6, sAddr, sizeof(sAddr));
+  inet_ntop(AF_INET6, &in_netblock->endAddr  .v6, eAddr, sizeof(eAddr));
+
+  LOG_ERROR(
+    "rr_import_netblockv6_insert insert failed:\n"
+    "  registrar_id: %u\n"
+    "  serial      : %u\n"
+    "  startAddr   : %s\n"
+    "  endAddr     : %s\n"
+    "  prefix_len  : %u\n"
+    "  netname     : %s\n"
+    "  org_handle  : %s\n"
+    "  descr       : %s\n",
+    in_netblock->registrar_id,
+    in_netblock->serial,
+    sAddr,
+    eAddr,
+    in_netblock->prefixLen,
+    in_netblock->netname,
+    in_netblock->org_handle,
+    in_netblock->descr);
+
   return false;
 }
 
