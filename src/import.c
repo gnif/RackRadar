@@ -580,51 +580,53 @@ static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned
 
 #pragma endregion
 
-typedef struct
+static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
 {
-  size_t  size;
-  char   *query;
-  off_t   pos;
-}
-QueryBuffer;
+  #define APPEND_OR_FAIL(qb, str) \
+    do { \
+      if (!rr_buffer_append_str(qb, str)) \
+      { \
+        LOG_ERROR("out of memory"); \
+        return false; \
+      } \
+    } while (0)
 
-static void db_build_list_query_where(ConfigList *cl, QueryBuffer *qb)
-{
   #define ADD_CONDITION(x, y, z) \
     if (cl->x ##_ ##y.z) \
       for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
-        qb->pos += snprintf(qb->query + qb->pos, qb->size - qb->pos, \
-          "%s" #x "." #y " LIKE '%s'", \
+        if (!rr_buffer_appendf(qb, "%s" #x "." #y " LIKE '%s'", \
           conditions > 0 ? " OR " : "", \
-          *str \
-        ); \
+          *str)) \
+        { \
+          LOG_ERROR("out of memory"); \
+          return false; \
+        }\
 
   bool started = false;
   if (cl->has_matches)
   {
     started = true;
-    qb->query[qb->pos++] = '(';
+    APPEND_OR_FAIL(qb, "(");
 
     int conditions = 0;
-    qb->query[qb->pos++] = '(';
+    APPEND_OR_FAIL(qb, "(");
     #define X(x, y) ADD_CONDITION(x, y, match)
     CONFIG_LIST_FIELDS
     #undef X
-    qb->query[qb->pos++] = ')';
+    APPEND_OR_FAIL(qb, ")");
 
     if (cl->has_ignores)
     {
-      strncpy(qb->query + qb->pos, " AND NOT (", qb->size - qb->pos);
-      qb->pos += 10;
+      APPEND_OR_FAIL(qb, " AND NOT (");
 
       conditions = 0;
       #define X(x, y) ADD_CONDITION(x, y, ignore)
       CONFIG_LIST_FIELDS
       #undef X
-      qb->query[qb->pos++] = ')';
+      APPEND_OR_FAIL(qb, ")");
     }
 
-    qb->query[qb->pos++] = ')';
+    APPEND_OR_FAIL(qb, ")");
   }
 
   if (cl->include)
@@ -640,11 +642,9 @@ static void db_build_list_query_where(ConfigList *cl, QueryBuffer *qb)
           l->include_seen = true;
 
           if (started)
-          {
-            strncpy(qb->query + qb->pos, " OR ", qb->size - qb->pos);
-            qb->pos += 4;
-          }
-          db_build_list_query_where(l, qb);
+            APPEND_OR_FAIL(qb, " OR ");
+          if (!db_build_list_query_where(l, qb))
+            return false;
           started = true;
           break;
         }
@@ -654,15 +654,9 @@ static void db_build_list_query_where(ConfigList *cl, QueryBuffer *qb)
   if (cl->exclude)
   {
     if (started)
-    {
-      strncpy(qb->query + qb->pos, " AND NOT (", qb->size - qb->pos);
-      qb->pos += 10;
-    }
+      APPEND_OR_FAIL(qb, " AND NOT (");
     else
-    {
-      strncpy(qb->query + qb->pos, " NOT (", qb->size - qb->pos);
-      qb->pos += 6;
-    }
+      APPEND_OR_FAIL(qb, " NOT (");
 
     started = false;
     for(const char **exclude = cl->exclude; *exclude; ++exclude)
@@ -676,21 +670,19 @@ static void db_build_list_query_where(ConfigList *cl, QueryBuffer *qb)
           l->exclude_seen = true;
 
           if (started)
-          {
-            strncpy(qb->query + qb->pos, " OR ", qb->size - qb->pos);
-            qb->pos += 4;
-          }
-          db_build_list_query_where(l, qb);
+            APPEND_OR_FAIL(qb, " OR ");
+          if (!db_build_list_query_where(l, qb))
+            return false;
           started = true;
           break;
         }
       }
 
-    qb->query[qb->pos++] = ')';
+    APPEND_OR_FAIL(qb, ")");
   }
-
-  qb->query[qb->pos] = '\0';
   #undef ADD_CONDITION
+  #undef APPEND_OR_FAIL
+  return true;
 }
 
 static bool db_init_fn(RRDBCon *con, void **udata)
@@ -708,18 +700,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     return false;
   }
 
-  QueryBuffer qb =
-  {
-    .size  = 8192,
-    .query = malloc(8192),
-    .pos   = 0,
-  };
-
-  if (!qb.query)
-  {
-    LOG_ERROR("out of memory");
-    return false;
-  }
+  RRBuffer qb = { .bufferSz = 8192 };
 
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
@@ -727,7 +708,8 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     for(int n = 0; n < 2; ++n)
     {
       const char *ver = n == 0 ? "v4" : "v6";
-      size_t start = qb.pos = snprintf(qb.query, qb.size,
+      rr_buffer_reset(&qb);
+      if (!rr_buffer_appendf(&qb,
         "INSERT INTO netblock_%s_list "
         "SELECT "
           "list.id, "
@@ -741,24 +723,39 @@ static bool db_init_fn(RRDBCon *con, void **udata)
           "LEFT  JOIN org  AS org  ON org.id    = ip.org_id "
         "WHERE ",
         ver,
-        ver);
+        ver))
+      {
+        LOG_ERROR("out of memory");
+        rr_buffer_free(&qb);
+        return false;
+      }
+      size_t start = qb.pos;
 
       // reset the seen state
       for(ConfigList *l = g_config.lists; l->name; ++l)
         l->include_seen = l->exclude_seen = false;
 
       // build the where part of the query
-      db_build_list_query_where(cl, &qb);
+      if (!db_build_list_query_where(cl, &qb))
+      {
+        LOG_ERROR("out of memory");
+        rr_buffer_free(&qb);
+        return false;
+      }
 
       // if the query wasn't built
       if (start == qb.pos)
         continue;
 
-      strncpy(qb.query + qb.pos, " ORDER BY ip.start_ip ASC", qb.size - qb.pos);
-      qb.pos += 25;
+      if (!rr_buffer_append_str(&qb, " ORDER BY ip.start_ip ASC"))
+      {
+        LOG_ERROR("out of memory");
+        rr_buffer_free(&qb);
+        return false;
+      }
 
       strcpy(list->in_list_name, cl->name);
-      list->stmt[n] = rr_db_stmt_prepare(con, qb.query,
+      list->stmt[n] = rr_db_stmt_prepare(con, qb.buffer,
         &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &list->in_list_name },
         NULL
       );
@@ -774,7 +771,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   }
 
   #undef CONFIG_LIST_FIELDS
-  free(qb.query);
+  rr_buffer_free(&qb);
   return true;
 }
 

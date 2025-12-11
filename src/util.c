@@ -21,7 +21,7 @@ ssize_t rr_alloc_vsprintf(RRBuffer *buf, const char *fmt, va_list ap)
 
   size_t offset = buf->pos;
   size_t required = offset + needed;
-  if (buf->bufferSz < required)
+  if (!buf->buffer || buf->bufferSz < required)
   {
     size_t newSize = buf->bufferSz ? buf->bufferSz : 256;
     while (newSize < required)
@@ -65,7 +65,7 @@ ssize_t rr_buffer_append_str(RRBuffer *buf, const char *str)
   size_t len = strlen(str);
   size_t required = offset + len + 1; // include NUL
 
-  if (buf->bufferSz < required)
+  if (!buf->buffer || buf->bufferSz < required)
   {
     size_t newSize = buf->bufferSz ? buf->bufferSz : 256;
     while (newSize < required)
