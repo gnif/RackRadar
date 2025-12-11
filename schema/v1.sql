@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4
   KEY idx_registrar  (registrar_id),
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
-  KEY idx_netname    (org_netname),
+  KEY idx_netname    (netname),
 
   CONSTRAINT uk_netblock_v4_constraint
     UNIQUE INDEX (registrar_id, org_handle, start_ip, end_ip),
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS netblock_v6
   KEY idx_registrar  (registrar_id),
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
-  KEY idx_netname    (org_netname),
+  KEY idx_netname    (netname),
 
   CONSTRAINT uk_netblock_v6_constraint
     UNIQUE INDEX (registrar_id, org_handle, start_ip, end_ip),
