@@ -140,6 +140,9 @@ static int http_handler_list_v4(struct MHD_Connection *con, const char *uri)
   bool found = false;
   for(ConfigList * list = g_config.lists; list->name; ++list)
   {
+    if (!list->build_list)
+      continue;
+
     if (strcmp(list->name, uri) == 0)
     {
       found = true;

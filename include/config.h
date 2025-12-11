@@ -33,6 +33,7 @@ typedef struct ConfigList
   const char *name;
   const char **include;
   const char **exclude;
+  bool build_list;
   bool has_matches;
   bool has_ignores;
   bool include_seen;
@@ -81,6 +82,7 @@ typedef struct Config
 
   ConfigList *lists;
   unsigned    nbLists;
+  unsigned    nbListsActive;
 }
 Config;
 

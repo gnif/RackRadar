@@ -693,7 +693,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   if (!g_config.lists)
     return true;
 
-  s_import.lists_prepare = calloc(g_config.nbLists + 1, sizeof(*s_import.lists_prepare));
+  s_import.lists_prepare = calloc(g_config.nbListsActive + 1, sizeof(*s_import.lists_prepare));
   if (!s_import.lists_prepare)
   {
     LOG_ERROR("out of memory");
@@ -705,6 +705,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
   {
+    if (!cl->build_list)
+      continue;
+
     for(int n = 0; n < 2; ++n)
     {
       const char *ver = n == 0 ? "v4" : "v6";

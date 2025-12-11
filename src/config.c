@@ -177,6 +177,17 @@ bool rr_config_init(void)
     config_setting_t *s = config_setting_get_elem(lists, i);
 
     list->name = config_setting_name(s);
+
+    int v;
+    if (config_setting_lookup_bool(s, "build", &v))
+    {
+      list->build_list = v == 1 ? 1 : 0;
+      if (list->build_list)
+        ++g_config.nbListsActive;
+    }
+    else
+      list->build_list = false;
+
     config_setting_t *include  = config_setting_lookup(s, "include" );
     config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
 
