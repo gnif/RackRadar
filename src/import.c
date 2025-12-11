@@ -1064,7 +1064,6 @@ static bool db_init_fn(RRDBCon *con, void **udata)
       qb.buffer[qb.pos] = '\0';
 
       strcpy(list->in_list_name, cl->name);
-      LOG_INFO("%s", qb.buffer);
       list->stmt[n] = rr_db_stmt_prepare(con, qb.buffer, NULL);
 
       if (!list->stmt[n])
