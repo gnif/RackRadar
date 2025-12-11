@@ -6,11 +6,28 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdalign.h>
+#include <stdarg.h>
+#include <sys/types.h>
 #include <arpa/inet.h>
 
 #define ARRAY_SIZE(x) (sizeof((x)) / sizeof(*(x)))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) > (b)) ? (b) : (a))
+
+typedef struct RRBuffer
+{
+  char  *buffer;
+  size_t bufferSz;
+  size_t pos;
+}
+RRBuffer;
+
+ssize_t rr_alloc_vsprintf   (RRBuffer *buf, const char *fmt, va_list ap);
+ssize_t rr_alloc_sprintf    (RRBuffer *buf, const char *fmt, ...);
+ssize_t rr_buffer_append_str(RRBuffer *buf, const char *str);
+bool    rr_buffer_appendf   (RRBuffer *buf, const char *fmt, ...);
+void    rr_buffer_reset     (RRBuffer *buf);
+void    rr_buffer_free      (RRBuffer *buf);
 
 bool rr_sanatize(char *text, size_t maxLen);
 int rr_parse_ipv4_decimal(const char *str, uint32_t *host);

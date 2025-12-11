@@ -3,9 +3,116 @@
 
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdarg.h>
 #include <unicode/ucsdet.h>
 #include <unicode/ucnv.h>
 #include <unicode/utypes.h>
+
+ssize_t rr_alloc_vsprintf(RRBuffer *buf, const char *fmt, va_list ap)
+{
+  if (!buf)
+    return -1;
+
+  size_t needed = 0;
+  va_list ap_copy;
+  va_copy(ap_copy, ap);
+  needed = (size_t)vsnprintf(NULL, 0, fmt, ap_copy) + 1; // include NUL
+  va_end(ap_copy);
+
+  size_t offset = buf->pos;
+  size_t required = offset + needed;
+  if (buf->bufferSz < required)
+  {
+    size_t newSize = buf->bufferSz ? buf->bufferSz : 256;
+    while (newSize < required)
+      newSize *= 2;
+
+    char *newBuffer = realloc(buf->buffer, newSize);
+    if (!newBuffer)
+    {
+      LOG_ERROR("out of memory");
+      return -1;
+    }
+
+    buf->buffer   = newBuffer;
+    buf->bufferSz = newSize;
+  }
+
+  int written = vsnprintf(buf->buffer + offset, buf->bufferSz - offset, fmt, ap);
+
+  if (written < 0)
+    return -1;
+
+  buf->pos = offset + (size_t)written;
+  return (ssize_t)buf->pos;
+}
+
+ssize_t rr_alloc_sprintf(RRBuffer *buf, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  ssize_t ret = rr_alloc_vsprintf(buf, fmt, ap);
+  va_end(ap);
+  return ret;
+}
+
+ssize_t rr_buffer_append_str(RRBuffer *buf, const char *str)
+{
+  if (!buf || !str)
+    return -1;
+
+  size_t offset = buf->pos;
+  size_t len = strlen(str);
+  size_t required = offset + len + 1; // include NUL
+
+  if (buf->bufferSz < required)
+  {
+    size_t newSize = buf->bufferSz ? buf->bufferSz : 256;
+    while (newSize < required)
+      newSize *= 2;
+
+    char *newBuffer = realloc(buf->buffer, newSize);
+    if (!newBuffer)
+    {
+      LOG_ERROR("out of memory");
+      return -1;
+    }
+
+    buf->buffer   = newBuffer;
+    buf->bufferSz = newSize;
+  }
+
+  memcpy(buf->buffer + offset, str, len + 1);
+  buf->pos = offset + len;
+  return (ssize_t)buf->pos;
+}
+
+bool rr_buffer_appendf(RRBuffer *buf, const char *fmt, ...)
+{
+  va_list ap;
+  va_start(ap, fmt);
+  ssize_t new_pos = rr_alloc_vsprintf(buf, fmt, ap);
+  va_end(ap);
+  if (new_pos < 0)
+    return false;
+
+  return true;
+}
+
+void rr_buffer_reset(RRBuffer *buf)
+{
+  buf->pos = 0;
+  if (buf->buffer)
+    buf->buffer[0] = '\0';
+}
+
+void rr_buffer_free(RRBuffer *buf)
+{
+  free(buf->buffer);
+  buf->buffer = NULL;
+  buf->bufferSz = 0;
+  buf->pos = 0;
+}
 
 static size_t scrub_invalid_utf8_inplace(char *s, size_t cap)
 {
