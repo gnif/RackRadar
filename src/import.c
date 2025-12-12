@@ -279,6 +279,7 @@ DEFAULT_STMT(RRImport, netblockv4_union_populate,
       "ORDER BY start_ip, end_ip "
     ") t "
     "CROSS JOIN (SELECT @grp := -1, @end := -1) vars "
+    "ORDER BY t.start_ip, t.end_ip "
   ") x "
   "GROUP BY grp"
 );
@@ -303,6 +304,7 @@ DEFAULT_STMT(RRImport, netblockv6_union_populate,
     "CROSS JOIN ( "
       "SELECT @grp := -1, @end := CAST(UNHEX('00000000000000000000000000000000') AS BINARY(16)) "
     ") vars "
+    "ORDER BY t.start_ip, t.end_ip "
   ") x "
   "GROUP BY grp"
 );
