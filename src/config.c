@@ -144,11 +144,15 @@ bool rr_config_init(void)
     config_setting_lookup_string(src, "url"      , &dst->url      );
     config_setting_lookup_string(src, "user"     , &dst->user     );
     config_setting_lookup_string(src, "pass"     , &dst->pass     );
+    config_setting_lookup_string(src, "extra_v4" , &dst->extra_v4 );
+    config_setting_lookup_string(src, "extra_v6" , &dst->extra_v6 );
 
     if (strcmp(type, "RPSL") == 0)
       dst->type = SOURCE_TYPE_RPSL;
     else if (strcmp(type, "ARIN") == 0)
-      dst->type = SOURCE_TYPE_ARIN;
+      dst->type = SOURCE_TYPE_JSON;
+    else if (strcmp(type, "JSON") == 0)
+      dst->type = SOURCE_TYPE_JSON;
     else
     {
       dst->type = SOURCE_TYPE_INVALID;
@@ -188,6 +192,7 @@ bool rr_config_init(void)
     else
       list->build_list = false;
 
+    config_setting_lookup_string(s, "registrar", &list->registrar);
     config_setting_t *include  = config_setting_lookup(s, "include" );
     config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
 

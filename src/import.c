@@ -9,6 +9,7 @@
 
 #include "rpsl.h"
 #include "arin.h"
+#include "json.h"
 
 #include <string.h>
 #include <assert.h>
@@ -605,11 +606,26 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
         }\
 
   bool started = false;
-  if (cl->has_matches)
+  if (cl->registrar)
   {
     started = true;
-    APPEND_OR_FAIL(qb, "(");
+    if (!rr_buffer_appendf(qb,
+      "(ip.registrar_id = (SELECT id FROM registrar WHERE name = '%s'))",
+      cl->registrar))
+    {
+      LOG_ERROR("out of memory");
+      return false;
+    }
+  }
 
+  if (cl->has_matches)
+  {
+    if (started)
+      APPEND_OR_FAIL(qb, " AND (");
+    else
+      APPEND_OR_FAIL(qb, "(");
+
+    started = true;
     int conditions = 0;
     APPEND_OR_FAIL(qb, "(");
     #define X(x, y) ADD_CONDITION(x, y, match)
@@ -723,9 +739,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
           "ip.end_ip, "
           "ip.prefix_len "
         "FROM "
-          "netblock_%s     AS ip "
-          "RIGHT JOIN list AS list ON list.name = ? "
-          "LEFT  JOIN org  AS org  ON org.id    = ip.org_id "
+          "netblock_%s          AS ip "
+          "RIGHT JOIN list      AS list      ON list.name    = ? "
+          "LEFT  JOIN org       AS org       ON org.id       = ip.org_id "
         "WHERE ",
         ver,
         ver))
@@ -1125,6 +1141,14 @@ bool rr_import_run(void)
         continue;
       }
 
+      if (fseek(fp, 0, SEEK_SET) != 0)
+      {
+        LOG_ERROR("fseek 0 failed");
+        if (!rr_db_rollback(con))
+          goto fail_con;
+        continue;
+      }
+
       LOG_INFO("start import %s", src->name);
       uint64_t startTime = rr_microtime();
 
@@ -1138,6 +1162,11 @@ bool rr_import_run(void)
 
         case SOURCE_TYPE_ARIN:
           success = rr_arin_import_zip_FILE(src->name, fp, registrar_id, serial);
+          break;
+
+        case SOURCE_TYPE_JSON:
+          success = rr_json_import_FILE(src->name, fp, registrar_id, serial,
+            src->extra_v4, src->extra_v6);
           break;
 
         default:
@@ -1154,8 +1183,8 @@ bool rr_import_run(void)
           !rr_import_org_delete_old         (registrar_id, serial) ||
           !rr_import_netblockv4_delete_old  (registrar_id, serial) ||
           !rr_import_netblockv6_delete_old  (registrar_id, serial) ||
-          !rr_import_netblockv4_link_org    () ||
-          !rr_import_netblockv6_link_org    () ||
+          (src->type != SOURCE_TYPE_JSON && !rr_import_netblockv4_link_org()) ||
+          (src->type != SOURCE_TYPE_JSON && !rr_import_netblockv6_link_org()) ||
           !rr_import_registrar_update_serial(registrar_id, serial) ||
           !rr_db_commit                     (con))
         {

@@ -351,7 +351,21 @@ uint8_t rr_ipv6_to_cidr(const unsigned __int128 start, const unsigned __int128 e
 #endif
 }
 
-void rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, unsigned __int128 *end_out)
+bool rr_calc_ipv4_cidr_end(uint32_t start, unsigned prefix_len, uint32_t *end_out)
+{
+  if (prefix_len >= 32)
+    return false;
+
+  if (prefix_len == 0)
+    return false;
+
+  uint32_t mask = UINT32_MAX << (32u - prefix_len);
+  uint32_t net  = start & mask;
+  *end_out = net | ~mask;
+  return true;
+}
+
+bool rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, unsigned __int128 *end_out)
 {
   const uint8_t *s = (const uint8_t *)start;
   uint8_t       *e = (uint8_t *)end_out;
@@ -359,7 +373,7 @@ void rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, 
   memcpy(e, s, 16);
 
   if (prefix_len >= 128)
-    return;
+    return false;
 
   unsigned full = prefix_len / 8;
   unsigned rem  = prefix_len % 8;
@@ -378,4 +392,6 @@ void rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, 
     for (unsigned i = full; i < 16; ++i)
       e[i] = 0xFF;
   }
+
+  return true;
 }

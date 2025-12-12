@@ -33,6 +33,7 @@ typedef struct ConfigList
   const char *name;
   const char **include;
   const char **exclude;
+  const char *registrar;
   bool build_list;
   bool has_matches;
   bool has_ignores;
@@ -69,13 +70,16 @@ typedef struct Config
     {
       SOURCE_TYPE_INVALID,
       SOURCE_TYPE_RPSL,
-      SOURCE_TYPE_ARIN
+      SOURCE_TYPE_ARIN,
+      SOURCE_TYPE_JSON
     }
     type;
     int frequency;
     const char *url;
     const char *user;
     const char *pass;
+    const char *extra_v4;
+    const char *extra_v6;
   }
   *sources;
   unsigned nbSources;

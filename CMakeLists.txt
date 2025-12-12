@@ -12,6 +12,7 @@ pkg_check_modules(MINIZIP REQUIRED IMPORTED_TARGET "minizip")
 pkg_check_modules(EXPAT REQUIRED IMPORTED_TARGET "expat")
 pkg_check_modules(ICU REQUIRED IMPORTED_TARGET "icu-uc icu-i18n")
 pkg_check_modules(LIBMICROHTTPD REQUIRED IMPORTED_TARGET "libmicrohttpd")
+pkg_check_modules(YYJSON REQUIRED IMPORTED_TARGET "yyjson")
 find_package(Iconv REQUIRED)
 
 add_compile_options(
@@ -39,6 +40,7 @@ add_executable(RackRadar
   src/http.c
   src/rpsl.c
   src/arin.c
+  src/json.c
 )
 
 add_compile_definitions(RackRadar
@@ -56,6 +58,7 @@ include_directories(RackRadar PRIVATE
   ${ICU_INCLUDE_DIRS}
   ${Iconv_INCLUDE_DIRS}
   ${LIBMICROHTTPD_INCLUDE_DIRS}
+  ${YYJSON_INCLUDE_DIRS}
 )
 
 target_link_libraries(RackRadar
@@ -68,6 +71,7 @@ target_link_libraries(RackRadar
   ${ICU_LIBRARIES}
   ${Iconv_LIBRARIES}
   ${LIBMICROHTTPD_LIBRARIES}
+  ${YYJSON_LIBRARIES}
   pthread
 )
 

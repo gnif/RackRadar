@@ -34,7 +34,8 @@ int     rr_parse_ipv4_decimal(const char *str, uint32_t *host);
 int     rr_parse_ipv6_decimal(const char *str, unsigned __int128 *host);
 uint8_t rr_ipv4_to_cidr      (const uint32_t start, const uint32_t end);
 uint8_t rr_ipv6_to_cidr      (const unsigned __int128 start, const unsigned __int128 end);
-void    rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, unsigned __int128 *end_out);
+bool    rr_calc_ipv4_cidr_end(uint32_t start, unsigned prefix_len, uint32_t *end_out);
+bool    rr_calc_ipv6_cidr_end(const unsigned __int128 *start, unsigned prefix_len, unsigned __int128 *end_out);
 
 static inline uint64_t rr_microtime(void)
 {
