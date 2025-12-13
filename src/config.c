@@ -150,7 +150,7 @@ bool rr_config_init(void)
     if (strcmp(type, "RPSL") == 0)
       dst->type = SOURCE_TYPE_RPSL;
     else if (strcmp(type, "ARIN") == 0)
-      dst->type = SOURCE_TYPE_JSON;
+      dst->type = SOURCE_TYPE_ARIN;
     else if (strcmp(type, "JSON") == 0)
       dst->type = SOURCE_TYPE_JSON;
     else
