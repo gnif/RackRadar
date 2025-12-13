@@ -7,10 +7,6 @@
 #include "query.h"
 #include "query_macros.h"
 
-#include "rpsl.h"
-#include "arin.h"
-#include "json.h"
-
 #include <string.h>
 #include <assert.h>
 
@@ -647,6 +643,25 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
     APPEND_OR_FAIL(qb, ")");
   }
 
+  if (cl->sources)
+  {
+    for(const char **source = cl->sources; *source; ++source)
+      for(typeof(g_config.sources) s = g_config.sources; s->name; ++s)
+      {
+        if (strcmp(s->name, *source) == 0)
+        {
+          if (started)
+            APPEND_OR_FAIL(qb, " OR ");
+          started = true;
+
+          rr_alloc_sprintf(qb,
+            "(ip.registrar_id = (SELECT id FROM registrar WHERE name = '%s'))",
+            s->name);
+          break;
+        }
+      }
+  }
+
   if (cl->include)
   {
     for(const char **include = cl->include; *include; ++include)
@@ -1154,18 +1169,26 @@ bool rr_import_run(void)
 
       ++serial;
       bool success = false;
+      bool linkOrgs = false;
       switch(src->type)
       {
         case SOURCE_TYPE_RPSL:
-          success = rr_rpsl_import_gz_FILE(src->name, fp, registrar_id, serial);
+          success  = rr_rpsl_import_gz_FILE(src->name, fp, registrar_id, serial);
+          linkOrgs = true;
           break;
 
         case SOURCE_TYPE_ARIN:
-          success = rr_arin_import_zip_FILE(src->name, fp, registrar_id, serial);
+          success  = rr_arin_import_zip_FILE(src->name, fp, registrar_id, serial);
+          linkOrgs = true;
           break;
 
         case SOURCE_TYPE_JSON:
           success = rr_json_import_FILE(src->name, fp, registrar_id, serial,
+            src->extra_v4, src->extra_v6);
+          break;
+
+        case SOURCE_TYPE_REGEX:
+          success = rr_regex_import_FILE(src->name, fp, registrar_id, serial,
             src->extra_v4, src->extra_v6);
           break;
 
@@ -1183,8 +1206,8 @@ bool rr_import_run(void)
           !rr_import_org_delete_old         (registrar_id, serial) ||
           !rr_import_netblockv4_delete_old  (registrar_id, serial) ||
           !rr_import_netblockv6_delete_old  (registrar_id, serial) ||
-          (src->type != SOURCE_TYPE_JSON && !rr_import_netblockv4_link_org()) ||
-          (src->type != SOURCE_TYPE_JSON && !rr_import_netblockv6_link_org()) ||
+          (linkOrgs && !rr_import_netblockv4_link_org()) ||
+          (linkOrgs && !rr_import_netblockv6_link_org()) ||
           !rr_import_registrar_update_serial(registrar_id, serial) ||
           !rr_db_commit                     (con))
         {

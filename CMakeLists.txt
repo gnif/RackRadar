@@ -41,6 +41,7 @@ add_executable(RackRadar
   src/rpsl.c
   src/arin.c
   src/json.c
+  src/regex.c
 )
 
 add_compile_definitions(RackRadar

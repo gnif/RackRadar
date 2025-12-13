@@ -1,4 +1,3 @@
-#include "rpsl.h"
 #include "log.h"
 #include "util.h"
 #include "import.h"

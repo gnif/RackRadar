@@ -31,6 +31,7 @@ ConfigFilter;
 typedef struct ConfigList
 {
   const char *name;
+  const char **sources;
   const char **include;
   const char **exclude;
   const char *registrar;
@@ -71,7 +72,8 @@ typedef struct Config
       SOURCE_TYPE_INVALID,
       SOURCE_TYPE_RPSL,
       SOURCE_TYPE_ARIN,
-      SOURCE_TYPE_JSON
+      SOURCE_TYPE_JSON,
+      SOURCE_TYPE_REGEX
     }
     type;
     int frequency;

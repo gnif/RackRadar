@@ -153,6 +153,8 @@ bool rr_config_init(void)
       dst->type = SOURCE_TYPE_ARIN;
     else if (strcmp(type, "JSON") == 0)
       dst->type = SOURCE_TYPE_JSON;
+    else if (strcmp(type, "REGEX") == 0)
+      dst->type = SOURCE_TYPE_REGEX;
     else
     {
       dst->type = SOURCE_TYPE_INVALID;
@@ -193,8 +195,15 @@ bool rr_config_init(void)
       list->build_list = false;
 
     config_setting_lookup_string(s, "registrar", &list->registrar);
-    config_setting_t *include  = config_setting_lookup(s, "include" );
-    config_setting_t *exclude  = config_setting_lookup(s, "exclude" );
+    config_setting_t *sources = config_setting_lookup(s, "sources");
+    config_setting_t *include = config_setting_lookup(s, "include");
+    config_setting_t *exclude = config_setting_lookup(s, "exclude");
+
+    if (sources && !rr_config_read_string_array(sources, &list->sources))
+    {
+      LOG_ERROR("lists.%s.sources failed to load", list->name);
+      continue;
+    }
 
     if (include && !rr_config_read_string_array(include, &list->include))
     {
@@ -234,6 +243,7 @@ void rr_config_deinit(void)
 {
   for(ConfigList *list = g_config.lists; list->name; ++list)
   {
+    free(list->sources);
     free(list->include);
     free(list->exclude);
     #define X(x, y) \
