@@ -67,7 +67,10 @@ bool rr_json_import_FILE(const char *registrar, FILE *fp,
         continue;
 
       if (!rr_import_netblockv4_insert(&netblock))
+      {
+        yyjson_doc_free(doc);
         return false;
+      }
     }
   }
 
@@ -108,9 +111,13 @@ bool rr_json_import_FILE(const char *registrar, FILE *fp,
         continue;
 
       if (!rr_import_netblockv6_insert(&netblock))
+      {
+        yyjson_doc_free(doc);
         return false;
+      }
     }
   }
 
+  yyjson_doc_free(doc);
   return true;
 }
