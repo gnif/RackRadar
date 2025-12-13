@@ -738,6 +738,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
   {
+    bool skip = false;
     if (!cl->build_list)
       continue;
 
@@ -781,7 +782,11 @@ static bool db_init_fn(RRDBCon *con, void **udata)
 
       // if the query wasn't built
       if (start == qb.pos)
-        continue;
+      {
+        LOG_WARN("Skipping invalid list: %s", cl->name);
+        skip = true;
+        break;
+      }
 
       if (!rr_buffer_append_str(&qb, " ORDER BY ip.start_ip ASC"))
       {
@@ -801,6 +806,12 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         LOG_ERROR("failed to prepare %s statement for list %s", ver, cl->name);
         continue;
       }
+    }
+
+    if (skip)
+    {
+      rr_db_stmt_free(&list->stmt[0]);
+      continue;
     }
 
     ++list;
