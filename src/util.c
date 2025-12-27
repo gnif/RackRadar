@@ -353,7 +353,7 @@ uint8_t rr_ipv6_to_cidr(const unsigned __int128 start, const unsigned __int128 e
 
 bool rr_calc_ipv4_cidr_end(uint32_t start, unsigned prefix_len, uint32_t *end_out)
 {
-  if (prefix_len >= 32)
+  if (prefix_len > 32)
     return false;
 
   if (prefix_len == 0)

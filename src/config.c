@@ -90,6 +90,26 @@ static bool rr_config_read_list_filter(config_setting_t *filter, ConfigFilter *o
   return true;
 }
 
+void rr_resolve_list_children(const char **children)
+{
+  if (!children)
+    return;
+
+  for(const char **listName = children; *listName; ++listName)
+    for(ConfigList *list = g_config.lists; list->name; ++list)
+      if (strcmp(list->name, *listName) == 0)
+      {
+        rr_resolve_list_children(list->include);
+        rr_resolve_list_children(list->exclude);
+        if (list->sources && !list->build_list)
+        {
+          list->build_list = true;
+          ++g_config.nbListsActive;
+        }
+        break;
+      }
+}
+
 bool rr_config_init(void)
 {
   config_init(&s_config);
@@ -234,6 +254,15 @@ bool rr_config_init(void)
 
     ++list;
     ++g_config.nbLists;
+  }
+
+  for (list = g_config.lists; list->name; ++list)
+  {
+    if (!list->build_list)
+      continue;
+
+    rr_resolve_list_children(list->include);
+    rr_resolve_list_children(list->exclude);
   }
 
   return true;

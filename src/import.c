@@ -8,6 +8,7 @@
 #include "query_macros.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <assert.h>
 
 typedef struct RRImport
@@ -84,6 +85,7 @@ typedef struct RRImport
 
   struct
   {
+    ConfigList *cl;
     char in_list_name[32];
     RRDBStmt *stmt[2];
   }
@@ -684,35 +686,6 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
       }
   }
 
-  if (cl->exclude)
-  {
-    if (started)
-      APPEND_OR_FAIL(qb, " AND NOT (");
-    else
-      APPEND_OR_FAIL(qb, " NOT (");
-
-    started = false;
-    for(const char **exclude = cl->exclude; *exclude; ++exclude)
-      for(ConfigList *l = g_config.lists; l->name; ++l)
-      {
-        if (strcmp(l->name, *exclude) == 0)
-        {
-          // prevent infinite recursion
-          if (l->exclude_seen)
-            break;
-          l->exclude_seen = true;
-
-          if (started)
-            APPEND_OR_FAIL(qb, " OR ");
-          if (!db_build_list_query_where(l, qb))
-            return false;
-          started = true;
-          break;
-        }
-      }
-
-    APPEND_OR_FAIL(qb, ")");
-  }
   #undef ADD_CONDITION
   #undef APPEND_OR_FAIL
   return true;
@@ -742,6 +715,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     if (!cl->build_list)
       continue;
 
+    list->cl = cl;
     for(int n = 0; n < 2; ++n)
     {
       const char *ver = n == 0 ? "v4" : "v6";
@@ -770,7 +744,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
 
       // reset the seen state
       for(ConfigList *l = g_config.lists; l->name; ++l)
-        l->include_seen = l->exclude_seen = false;
+        l->include_seen = false;
 
       // build the where part of the query
       if (!db_build_list_query_where(cl, &qb))
@@ -780,7 +754,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         return false;
       }
 
-      // if the query wasn't built
+      // If there was no query built
       if (start == qb.pos)
       {
         LOG_WARN("Skipping invalid list: %s", cl->name);
@@ -795,7 +769,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         return false;
       }
 
-      strcpy(list->in_list_name, cl->name);
+      strncpy(list->in_list_name, cl->name, sizeof(list->in_list_name));
       list->stmt[n] = rr_db_stmt_prepare(con, qb.buffer,
         &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &list->in_list_name },
         NULL
@@ -885,15 +859,326 @@ static bool rr_emit_ipv4_range_as_cidrs(unsigned list_id, uint32_t start, uint32
   return true;
 }
 
-static bool rr_import_netblockv4_list_union_populate(RRDBCon *con, unsigned list_id)
+typedef struct RRExcludeRangeV4
+{
+  uint32_t start;
+  uint32_t end;
+}
+RRExcludeRangeV4;
+
+typedef struct RRExcludeRangeV6
+{
+  unsigned __int128 start;
+  unsigned __int128 end;
+}
+RRExcludeRangeV6;
+
+static int rr_exclude_range_v4_cmp(const void *a, const void *b)
+{
+  const RRExcludeRangeV4 *left = a;
+  const RRExcludeRangeV4 *right = b;
+  if (left->start < right->start)
+    return -1;
+  if (left->start > right->start)
+    return 1;
+  if (left->end < right->end)
+    return -1;
+  if (left->end > right->end)
+    return 1;
+  return 0;
+}
+
+static int rr_exclude_range_v6_cmp(const void *a, const void *b)
+{
+  const RRExcludeRangeV6 *left = a;
+  const RRExcludeRangeV6 *right = b;
+  if (left->start < right->start)
+    return -1;
+  if (left->start > right->start)
+    return 1;
+  if (left->end < right->end)
+    return -1;
+  if (left->end > right->end)
+    return 1;
+  return 0;
+}
+
+static bool rr_append_exclude_v4_range(RRExcludeRangeV4 **ranges, size_t *count, size_t *capacity,
+  uint32_t start, uint32_t end)
+{
+  if (*count >= *capacity)
+  {
+    size_t next_capacity = (*capacity == 0) ? 64 : (*capacity * 2);
+    RRExcludeRangeV4 *next = realloc(*ranges, next_capacity * sizeof(*next));
+    if (!next)
+    {
+      LOG_ERROR("out of memory");
+      return false;
+    }
+    *ranges = next;
+    *capacity = next_capacity;
+  }
+
+  (*ranges)[*count] = (RRExcludeRangeV4){ .start = start, .end = end };
+  ++(*count);
+  return true;
+}
+
+static bool rr_append_exclude_v6_range(RRExcludeRangeV6 **ranges, size_t *count, size_t *capacity,
+  unsigned __int128 start, unsigned __int128 end)
+{
+  if (*count >= *capacity)
+  {
+    size_t next_capacity = (*capacity == 0) ? 64 : (*capacity * 2);
+    RRExcludeRangeV6 *next = realloc(*ranges, next_capacity * sizeof(*next));
+    if (!next)
+    {
+      LOG_ERROR("out of memory");
+      return false;
+    }
+    *ranges = next;
+    *capacity = next_capacity;
+  }
+
+  (*ranges)[*count] = (RRExcludeRangeV6){ .start = start, .end = end };
+  ++(*count);
+  return true;
+}
+
+static size_t rr_merge_exclude_v4_ranges(RRExcludeRangeV4 *ranges, size_t count)
+{
+  if (count == 0)
+    return 0;
+
+  size_t out = 0;
+  for (size_t i = 0; i < count; ++i)
+  {
+    if (out == 0)
+    {
+      ranges[out++] = ranges[i];
+      continue;
+    }
+
+    RRExcludeRangeV4 *cur = &ranges[out - 1];
+    if ((uint64_t)ranges[i].start <= (uint64_t)cur->end + 1ULL)
+    {
+      if (ranges[i].end > cur->end)
+        cur->end = ranges[i].end;
+      continue;
+    }
+
+    ranges[out++] = ranges[i];
+  }
+
+  return out;
+}
+
+static size_t rr_merge_exclude_v6_ranges(RRExcludeRangeV6 *ranges, size_t count)
+{
+  if (count == 0)
+    return 0;
+
+  const unsigned __int128 U128_MAX = (unsigned __int128)-1;
+  size_t out = 0;
+  for (size_t i = 0; i < count; ++i)
+  {
+    if (out == 0)
+    {
+      ranges[out++] = ranges[i];
+      continue;
+    }
+
+    RRExcludeRangeV6 *cur = &ranges[out - 1];
+    bool overlaps = (ranges[i].start <= cur->end);
+    bool adjacent = (cur->end != U128_MAX) && (ranges[i].start == cur->end + 1);
+    if (overlaps || adjacent)
+    {
+      if (ranges[i].end > cur->end)
+        cur->end = ranges[i].end;
+      continue;
+    }
+
+    ranges[out++] = ranges[i];
+  }
+
+  return out;
+}
+
+static bool rr_collect_exclude_v4_ranges(RRDBCon *con, const ConfigList *cl, RRExcludeRangeV4 **out_ranges, size_t *out_count)
+{
+  *out_ranges = NULL;
+  *out_count = 0;
+  if (!cl || !cl->exclude)
+    return true;
+
+  size_t capacity = 0;
+  for (const char **exclude = cl->exclude; *exclude; ++exclude)
+  {
+    unsigned exclude_list_id;
+    int rc = rr_query_list_by_name(con, *exclude, &exclude_list_id);
+    if (rc == 0)
+    {
+      LOG_WARN("Exclude list not found: %s", *exclude);
+      continue;
+    }
+    if (rc < 0)
+      return false;
+
+    if (!rr_query_netblockv4_list_union_start(con, exclude_list_id, true))
+      return false;
+
+    uint32_t ip;
+    uint8_t prefix_len;
+    while ((rc = rr_query_netblockv4_list_union_fetch(con, &ip, &prefix_len)) == 1)
+    {
+      uint32_t end_ip = ip;
+      if (prefix_len == 0)
+      {
+        ip = 0;
+        end_ip = UINT32_MAX;
+      }
+      else if (prefix_len < 32)
+      {
+        uint32_t mask = UINT32_MAX << (32u - prefix_len);
+        uint32_t network = ip & mask;
+        ip = network;
+        end_ip = network | ~mask;
+      }
+
+      if (!rr_append_exclude_v4_range(out_ranges, out_count, &capacity, ip, end_ip))
+      {
+        rr_query_netblockv4_list_union_end(con);
+        return false;
+      }
+    }
+
+    rr_query_netblockv4_list_union_end(con);
+    if (rc < 0)
+      return false;
+  }
+
+  if (*out_count == 0)
+    return true;
+
+  qsort(*out_ranges, *out_count, sizeof(**out_ranges), rr_exclude_range_v4_cmp);
+  *out_count = rr_merge_exclude_v4_ranges(*out_ranges, *out_count);
+  return true;
+}
+
+static bool rr_collect_exclude_v6_ranges(RRDBCon *con, const ConfigList *cl, RRExcludeRangeV6 **out_ranges, size_t *out_count)
+{
+  *out_ranges = NULL;
+  *out_count = 0;
+  if (!cl || !cl->exclude)
+    return true;
+
+  size_t capacity = 0;
+  for (const char **exclude = cl->exclude; *exclude; ++exclude)
+  {
+    unsigned exclude_list_id;
+    int rc = rr_query_list_by_name(con, *exclude, &exclude_list_id);
+    if (rc == 0)
+    {
+      LOG_WARN("Exclude list not found: %s", *exclude);
+      continue;
+    }
+    if (rc < 0)
+      return false;
+
+    if (!rr_query_netblockv6_list_union_start(con, exclude_list_id, true))
+      return false;
+
+    unsigned __int128 ip;
+    uint8_t prefix_len;
+    while ((rc = rr_query_netblockv6_list_union_fetch(con, &ip, &prefix_len)) == 1)
+    {
+      unsigned __int128 end_ip = ip;
+      if (prefix_len == 0)
+      {
+        ip = 0;
+        end_ip = (unsigned __int128)-1;
+      }
+      else if (prefix_len < 128)
+      {
+        unsigned __int128 ip_be = rr_raw_to_be(ip);
+        unsigned __int128 mask = ((unsigned __int128)-1) << (128u - prefix_len);
+        unsigned __int128 network = ip_be & mask;
+        ip = rr_be_to_raw(network);
+        end_ip = rr_be_to_raw(network | ~mask);
+      }
+
+      if (!rr_append_exclude_v6_range(out_ranges, out_count, &capacity, rr_raw_to_be(ip), rr_raw_to_be(end_ip)))
+      {
+        rr_query_netblockv6_list_union_end(con);
+        return false;
+      }
+    }
+
+    rr_query_netblockv6_list_union_end(con);
+    if (rc < 0)
+      return false;
+  }
+
+  if (*out_count == 0)
+    return true;
+
+  qsort(*out_ranges, *out_count, sizeof(**out_ranges), rr_exclude_range_v6_cmp);
+  *out_count = rr_merge_exclude_v6_ranges(*out_ranges, *out_count);
+  return true;
+}
+
+static bool rr_emit_ipv4_range_with_excludes(unsigned list_id, uint32_t start, uint32_t end,
+  const RRExcludeRangeV4 *excludes, size_t exclude_count, size_t *exclude_index)
+{
+  uint32_t cur = start;
+
+  while (cur <= end)
+  {
+    while (*exclude_index < exclude_count && excludes[*exclude_index].end < cur)
+      ++(*exclude_index);
+
+    if (*exclude_index >= exclude_count || excludes[*exclude_index].start > end)
+      return rr_emit_ipv4_range_as_cidrs(list_id, cur, end);
+
+    if (excludes[*exclude_index].start > cur)
+    {
+      uint32_t chunk_end = excludes[*exclude_index].start - 1;
+      if (!rr_emit_ipv4_range_as_cidrs(list_id, cur, chunk_end))
+        return false;
+    }
+
+    if (excludes[*exclude_index].end >= end)
+      break;
+
+    if (excludes[*exclude_index].end == UINT32_MAX)
+      break;
+
+    cur = excludes[*exclude_index].end + 1;
+    if (cur == 0)
+      break;
+  }
+
+  return true;
+}
+
+static bool rr_import_netblockv4_list_union_populate(RRDBCon *con, const ConfigList *cl, unsigned list_id)
 {
   uint32_t start_ip, end_ip;
   uint8_t  prefix_len;
   uint32_t run_start = 0, run_end = 0;
   bool     have_run = false;
 
-  if (!rr_query_netblockv4_list_start(con, list_id, true))
+  RRExcludeRangeV4 *exclude_ranges = NULL;
+  size_t exclude_count = 0;
+  size_t exclude_index = 0;
+  if (!rr_collect_exclude_v4_ranges(con, cl, &exclude_ranges, &exclude_count))
     return false;
+
+  if (!rr_query_netblockv4_list_start(con, list_id, true))
+  {
+    free(exclude_ranges);
+    return false;
+  }
 
   int rc;
   while ((rc = rr_query_netblockv4_list_fetch(con, &start_ip, &end_ip, &prefix_len)) == 1)
@@ -913,9 +1198,14 @@ static bool rr_import_netblockv4_list_union_populate(RRDBCon *con, unsigned list
       continue;
     }
 
-    if (!rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end))
+    bool emitted = exclude_count == 0
+      ? rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end)
+      : rr_emit_ipv4_range_with_excludes(list_id, run_start, run_end, exclude_ranges, exclude_count, &exclude_index);
+
+    if (!emitted)
     {
       rr_query_netblockv4_list_end(con);
+      free(exclude_ranges);
       return false;
     }
 
@@ -923,19 +1213,29 @@ static bool rr_import_netblockv4_list_union_populate(RRDBCon *con, unsigned list
     run_end   = end_ip;
   }
 
-  if (have_run && !rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end))
+  if (have_run)
   {
-    rr_query_netblockv4_list_end(con);
-    return false;
+    bool emitted = exclude_count == 0
+      ? rr_emit_ipv4_range_as_cidrs(list_id, run_start, run_end)
+      : rr_emit_ipv4_range_with_excludes(list_id, run_start, run_end, exclude_ranges, exclude_count, &exclude_index);
+
+    if (!emitted)
+    {
+      rr_query_netblockv4_list_end(con);
+      free(exclude_ranges);
+      return false;
+    }
   }
 
   if (rc < 0)
   {
     rr_query_netblockv4_list_end(con);
+    free(exclude_ranges);
     return false;
   }
 
   rr_query_netblockv4_list_end(con);
+  free(exclude_ranges);
   return true;
 }
 
@@ -983,7 +1283,42 @@ static bool rr_emit_ipv6_range_as_cidrs(unsigned list_id, unsigned __int128 star
   return true;
 }
 
-static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, unsigned list_id)
+static bool rr_emit_ipv6_range_with_excludes(unsigned list_id, unsigned __int128 start_be, unsigned __int128 end_be,
+  const RRExcludeRangeV6 *excludes, size_t exclude_count, size_t *exclude_index)
+{
+  const unsigned __int128 U128_MAX = (unsigned __int128)-1;
+  unsigned __int128 cur = start_be;
+
+  while (cur <= end_be)
+  {
+    while (*exclude_index < exclude_count && excludes[*exclude_index].end < cur)
+      ++(*exclude_index);
+
+    if (*exclude_index >= exclude_count || excludes[*exclude_index].start > end_be)
+      return rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(cur), rr_be_to_raw(end_be));
+
+    if (excludes[*exclude_index].start > cur)
+    {
+      unsigned __int128 chunk_end = excludes[*exclude_index].start - 1;
+      if (!rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(cur), rr_be_to_raw(chunk_end)))
+        return false;
+    }
+
+    if (excludes[*exclude_index].end >= end_be)
+      break;
+
+    if (excludes[*exclude_index].end == U128_MAX)
+      break;
+
+    cur = excludes[*exclude_index].end + 1;
+    if (cur == 0)
+      break;
+  }
+
+  return true;
+}
+
+static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, const ConfigList *cl, unsigned list_id)
 {
   unsigned __int128 start_raw, end_raw;
   uint8_t  prefix_len;
@@ -993,8 +1328,17 @@ static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, unsigned list
   unsigned __int128 run_start = 0, run_end = 0; // BE-numeric domain
   bool have_run = false;
 
-  if (!rr_query_netblockv6_list_start(con, list_id, true))
+  RRExcludeRangeV6 *exclude_ranges = NULL;
+  size_t exclude_count = 0;
+  size_t exclude_index = 0;
+  if (!rr_collect_exclude_v6_ranges(con, cl, &exclude_ranges, &exclude_count))
     return false;
+
+  if (!rr_query_netblockv6_list_start(con, list_id, true))
+  {
+    free(exclude_ranges);
+    return false;
+  }
 
   int rc;
   while ((rc = rr_query_netblockv6_list_fetch(con, &start_raw, &end_raw, &prefix_len)) == 1)
@@ -1022,9 +1366,14 @@ static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, unsigned list
       continue;
     }
 
-    if (!rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end)))
+    bool emitted = exclude_count == 0
+      ? rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end))
+      : rr_emit_ipv6_range_with_excludes(list_id, run_start, run_end, exclude_ranges, exclude_count, &exclude_index);
+
+    if (!emitted)
     {
       rr_query_netblockv6_list_end(con);
+      free(exclude_ranges);
       return false;
     }
 
@@ -1032,13 +1381,22 @@ static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, unsigned list
     run_end   = end;
   }
 
-  if (have_run && !rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end)))
+  if (have_run)
   {
-    rr_query_netblockv6_list_end(con);
-    return false;
+    bool emitted = exclude_count == 0
+      ? rr_emit_ipv6_range_as_cidrs(list_id, rr_be_to_raw(run_start), rr_be_to_raw(run_end))
+      : rr_emit_ipv6_range_with_excludes(list_id, run_start, run_end, exclude_ranges, exclude_count, &exclude_index);
+
+    if (!emitted)
+    {
+      rr_query_netblockv6_list_end(con);
+      free(exclude_ranges);
+      return false;
+    }
   }
 
   rr_query_netblockv6_list_end(con);
+  free(exclude_ranges);
   return (rc >= 0);
 }
 
@@ -1050,20 +1408,20 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
   LOG_INFO("rebuilding lists");
   for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list->stmt[0] && list->stmt[1]; ++list)
   {
-    LOG_INFO("  Building: %s", list->in_list_name);
+    LOG_INFO("  Building: %s", list->cl->name);
     unsigned list_id;
     if (
       !rr_db_start(con) ||
-      !rr_import_list_insert(list->in_list_name) ||
-      rr_query_list_by_name(con, list->in_list_name, &list_id) != 1 ||
+      !rr_import_list_insert(list->cl->name) ||
+      rr_query_list_by_name(con, list->cl->name, &list_id) != 1 ||
       !rr_import_netblockv4_list_delete(list_id) ||
       !rr_import_netblockv6_list_delete(list_id) ||
       !rr_db_stmt_execute(list->stmt[0], NULL) ||
       !rr_db_stmt_execute(list->stmt[1], NULL) ||
       !rr_import_netblockv4_list_union_delete  (list_id) ||
       !rr_import_netblockv6_list_union_delete  (list_id) ||
-      !rr_import_netblockv4_list_union_populate(con, list_id) ||
-      !rr_import_netblockv6_list_union_populate(con, list_id) ||
+      !rr_import_netblockv4_list_union_populate(con, list->cl, list_id) ||
+      !rr_import_netblockv6_list_union_populate(con, list->cl, list_id) ||
       !rr_db_commit(con))
     {
       rr_db_rollback(con);

@@ -39,7 +39,6 @@ typedef struct ConfigList
   bool has_matches;
   bool has_ignores;
   bool include_seen;
-  bool exclude_seen;
   CONFIG_LIST_FIELDS
 }
 ConfigList;
