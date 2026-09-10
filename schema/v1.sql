@@ -21,8 +21,12 @@ COLLATE         = utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS import_state
 (
-  id           TINYINT UNSIGNED NOT NULL,
-  unions_dirty TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  id               TINYINT UNSIGNED NOT NULL,
+  unions_dirty     TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  data_generation  BIGINT  UNSIGNED NOT NULL DEFAULT 0,
+  list_generation  BIGINT  UNSIGNED NOT NULL DEFAULT 0,
+  list_config_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin
+    NOT NULL DEFAULT '',
 
   PRIMARY KEY(id),
 

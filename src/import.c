@@ -14,6 +14,7 @@
 
 #define RR_IMPORT_BATCH_ROWS            64
 #define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
+#define RR_IMPORT_LIST_VERSION          "RackRadar-list-builder-v1"
 #define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v1"
 
 typedef struct RRImportSourceState
@@ -98,6 +99,23 @@ typedef struct RRImportListUnionBatch
   ipv6;
 }
 RRImportListUnionBatch;
+
+typedef enum RRImportListState
+{
+  RR_IMPORT_LIST_PENDING,
+  RR_IMPORT_LIST_BUILDING,
+  RR_IMPORT_LIST_BUILT
+}
+RRImportListState;
+
+typedef struct RRImportList
+{
+  ConfigList        *cl;
+  char               in_list_name[32];
+  RRDBStmt          *stmt[2];
+  RRImportListState  state;
+}
+RRImportList;
 
 typedef struct RRImport
 {
@@ -213,7 +231,20 @@ typedef struct RRImport
     uint8_t out_dirty;
   );
 
-  STMT_STRUCT(unions_mark_dirty,);
+  STMT_STRUCT(import_state_mark_changed,
+    uint8_t in_unions_dirty;
+  );
+
+  STMT_STRUCT(list_state_get,
+    unsigned long long out_data_generation;
+    unsigned long long out_list_generation;
+    char               out_config_hash[RR_SHA256_HEX_SIZE];
+  );
+
+  STMT_STRUCT(list_state_mark_current,
+    char in_config_hash[RR_SHA256_HEX_SIZE];
+  );
+
   STMT_STRUCT(unions_mark_clean,);
 
   STMT_STRUCT(netblockv4_union_next_truncate,);
@@ -246,16 +277,12 @@ typedef struct RRImport
     uint8_t  in_prefix_len;
   );
 
-  struct
-  {
-    ConfigList *cl;
-    char in_list_name[32];
-    RRDBStmt *stmt[2];
-  }
-  *lists_prepare;
+  RRImportList *lists_prepare;
 }
 RRImport;
 RRImport s_import = { 0 };
+
+static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE]);
 
 #define STATEMENTS(X) \
   X(registrar_insert              ) \
@@ -283,7 +310,9 @@ RRImport s_import = { 0 };
   X(netblockv6_delete_old         ) \
   X(netblockv6_link_org           ) \
   X(unions_dirty_get              ) \
-  X(unions_mark_dirty             ) \
+  X(import_state_mark_changed     ) \
+  X(list_state_get                ) \
+  X(list_state_mark_current       ) \
   X(unions_mark_clean             ) \
   X(netblockv4_union_next_truncate) \
   X(netblockv6_union_next_truncate) \
@@ -665,8 +694,34 @@ DEFAULT_STMT(RRImport, unions_dirty_get,
   &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_dirty }
 );
 
-DEFAULT_STMT(RRImport, unions_mark_dirty,
-  "UPDATE import_state SET unions_dirty = 1 WHERE id = 1"
+DEFAULT_STMT(RRImport, import_state_mark_changed,
+  "UPDATE import_state SET "
+    "unions_dirty = IF(? != 0, 1, unions_dirty), "
+    "data_generation = data_generation + 1 "
+  "WHERE id = 1",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->in_unions_dirty }
+);
+
+DEFAULT_STMT(RRImport, list_state_get,
+  "SELECT data_generation, list_generation, list_config_hash "
+  "FROM import_state WHERE id = 1",
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out_data_generation },
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->out_list_generation },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out_config_hash,
+    .size = sizeof(this->out_config_hash)
+  }
+);
+
+DEFAULT_STMT(RRImport, list_state_mark_current,
+  "UPDATE import_state SET "
+    "list_generation = data_generation, "
+    "list_config_hash = ? "
+  "WHERE id = 1",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_config_hash }
 );
 
 DEFAULT_STMT(RRImport, unions_mark_clean,
@@ -1066,10 +1121,11 @@ static bool rr_import_netblockv4_delete_old(unsigned in_registrar_id)
   return rr_db_stmt_execute(s_import.netblockv4_delete_old.stmt, &s_import.stats.deletedIPv4);
 }
 
-static bool rr_import_netblockv4_link_org(unsigned in_registrar_id)
+static bool rr_import_netblockv4_link_org(
+  unsigned in_registrar_id, unsigned long long *out_affected)
 {
   s_import.netblockv4_link_org.in_registrar_id = in_registrar_id;
-  return rr_db_stmt_execute(s_import.netblockv4_link_org.stmt, NULL);
+  return rr_db_stmt_execute(s_import.netblockv4_link_org.stmt, out_affected);
 }
 
 bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
@@ -1115,10 +1171,11 @@ static bool rr_import_netblockv6_delete_old(unsigned in_registrar_id)
   return rr_db_stmt_execute(s_import.netblockv6_delete_old.stmt, &s_import.stats.deletedIPv6);
 }
 
-static bool rr_import_netblockv6_link_org(unsigned in_registrar_id)
+static bool rr_import_netblockv6_link_org(
+  unsigned in_registrar_id, unsigned long long *out_affected)
 {
   s_import.netblockv6_link_org.in_registrar_id = in_registrar_id;
-  return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, NULL);
+  return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, out_affected);
 }
 
 static bool rr_import_stages_truncate(void)
@@ -1137,9 +1194,34 @@ static int rr_import_unions_dirty(bool *out_dirty)
   return rc;
 }
 
-static bool rr_import_unions_mark_dirty(void)
+static bool rr_import_state_mark_changed(bool unions_dirty)
 {
-  return rr_db_stmt_execute(s_import.unions_mark_dirty.stmt, NULL);
+  s_import.import_state_mark_changed.in_unions_dirty = unions_dirty ? 1 : 0;
+  return rr_db_stmt_execute(s_import.import_state_mark_changed.stmt, NULL);
+}
+
+static int rr_import_list_state_get(
+  unsigned long long *out_data_generation,
+  unsigned long long *out_list_generation,
+  char                out_config_hash[RR_SHA256_HEX_SIZE])
+{
+  int rc = rr_db_stmt_fetch_one(s_import.list_state_get.stmt);
+  if (rc == 1)
+  {
+    *out_data_generation = s_import.list_state_get.out_data_generation;
+    *out_list_generation = s_import.list_state_get.out_list_generation;
+    snprintf(out_config_hash, RR_SHA256_HEX_SIZE, "%s",
+      s_import.list_state_get.out_config_hash);
+  }
+  return rc;
+}
+
+static bool rr_import_list_state_mark_current(const char *config_hash)
+{
+  snprintf(s_import.list_state_mark_current.in_config_hash,
+    sizeof(s_import.list_state_mark_current.in_config_hash),
+    "%s", config_hash);
+  return rr_db_stmt_execute(s_import.list_state_mark_current.stmt, NULL);
 }
 
 static bool rr_import_unions_mark_clean(void)
@@ -1688,7 +1770,6 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
   {
-    bool skip = false;
     if (!cl->build_list)
       continue;
 
@@ -1734,9 +1815,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
       // If there was no query built
       if (start == qb.pos)
       {
-        LOG_WARN("Skipping invalid list: %s", cl->name);
-        skip = true;
-        break;
+        LOG_ERROR("active list has no selection criteria: %s", cl->name);
+        rr_buffer_free(&qb);
+        return false;
       }
 
       if (!rr_buffer_append_str(&qb, " ORDER BY ip.start_ip ASC"))
@@ -1755,14 +1836,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
       if (!list->stmt[n])
       {
         LOG_ERROR("failed to prepare %s statement for list %s", ver, cl->name);
-        continue;
+        rr_buffer_free(&qb);
+        return false;
       }
-    }
-
-    if (skip)
-    {
-      rr_db_stmt_free(&list->stmt[0]);
-      continue;
     }
 
     ++list;
@@ -2380,37 +2456,107 @@ static bool rr_import_netblockv6_list_union_populate(RRDBCon *con, const ConfigL
   return (rc >= 0);
 }
 
+static RRImportList *rr_import_list_find(const char *name)
+{
+  for(RRImportList *list = s_import.lists_prepare; list->cl; ++list)
+    if (strcmp(list->cl->name, name) == 0)
+      return list;
+
+  return NULL;
+}
+
+static bool rr_import_build_list(RRDBCon *con, RRImportList *list)
+{
+  if (list->state == RR_IMPORT_LIST_BUILT)
+    return true;
+
+  if (list->state == RR_IMPORT_LIST_BUILDING)
+  {
+    LOG_ERROR("list exclusion cycle detected at %s", list->cl->name);
+    return false;
+  }
+
+  list->state = RR_IMPORT_LIST_BUILDING;
+  if (list->cl->exclude)
+    for(const char **name = list->cl->exclude; *name; ++name)
+    {
+      RRImportList *dependency = rr_import_list_find(*name);
+      if (!dependency)
+      {
+        LOG_ERROR("exclude list %s required by %s is not buildable",
+          *name, list->cl->name);
+        return false;
+      }
+
+      if (!rr_import_build_list(con, dependency))
+        return false;
+    }
+
+  LOG_INFO("  Building: %s", list->cl->name);
+  unsigned list_id;
+  rr_import_list_union_batches_reset();
+  if (
+    !rr_db_start(con) ||
+    !rr_import_list_insert(list->cl->name) ||
+    rr_query_list_by_name(con, list->cl->name, &list_id) != 1 ||
+    !rr_import_netblockv4_list_delete(list_id) ||
+    !rr_import_netblockv6_list_delete(list_id) ||
+    !rr_db_stmt_execute(list->stmt[0], NULL) ||
+    !rr_db_stmt_execute(list->stmt[1], NULL) ||
+    !rr_import_netblockv4_list_union_delete  (list_id) ||
+    !rr_import_netblockv6_list_union_delete  (list_id) ||
+    !rr_import_netblockv4_list_union_populate(con, list->cl, list_id) ||
+    !rr_import_netblockv6_list_union_populate(con, list->cl, list_id) ||
+    !rr_import_list_union_batches_flush      () ||
+    !rr_db_commit(con))
+  {
+    rr_db_rollback(con);
+    rr_import_list_union_batches_reset();
+    LOG_ERROR("failed");
+    return false;
+  }
+
+  list->state = RR_IMPORT_LIST_BUILT;
+  return true;
+}
+
 static bool rr_import_build_lists_internal(RRDBCon *con)
 {
   if (!g_config.lists)
     return true;
 
-  LOG_INFO("rebuilding lists");
-  for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list->stmt[0] && list->stmt[1]; ++list)
+  unsigned long long dataGeneration;
+  unsigned long long listGeneration;
+  char               configHash[RR_SHA256_HEX_SIZE];
+  char               storedHash[RR_SHA256_HEX_SIZE];
+
+  rr_import_list_config_hash(configHash);
+  if (rr_import_list_state_get(
+    &dataGeneration, &listGeneration, storedHash) != 1)
   {
-    LOG_INFO("  Building: %s", list->cl->name);
-    unsigned list_id;
-    rr_import_list_union_batches_reset();
-    if (
-      !rr_db_start(con) ||
-      !rr_import_list_insert(list->cl->name) ||
-      rr_query_list_by_name(con, list->cl->name, &list_id) != 1 ||
-      !rr_import_netblockv4_list_delete(list_id) ||
-      !rr_import_netblockv6_list_delete(list_id) ||
-      !rr_db_stmt_execute(list->stmt[0], NULL) ||
-      !rr_db_stmt_execute(list->stmt[1], NULL) ||
-      !rr_import_netblockv4_list_union_delete  (list_id) ||
-      !rr_import_netblockv6_list_union_delete  (list_id) ||
-      !rr_import_netblockv4_list_union_populate(con, list->cl, list_id) ||
-      !rr_import_netblockv6_list_union_populate(con, list->cl, list_id) ||
-      !rr_import_list_union_batches_flush      () ||
-      !rr_db_commit(con))
-    {
-      rr_db_rollback(con);
-      rr_import_list_union_batches_reset();
-      LOG_ERROR("failed");
+    LOG_ERROR("failed to read the list state");
+    return false;
+  }
+
+  if (dataGeneration == listGeneration &&
+      strcmp(configHash, storedHash) == 0)
+  {
+    LOG_INFO("list snapshot is current");
+    return true;
+  }
+
+  LOG_INFO("rebuilding lists");
+  for(RRImportList *list = s_import.lists_prepare; list->cl; ++list)
+    list->state = RR_IMPORT_LIST_PENDING;
+
+  for(RRImportList *list = s_import.lists_prepare; list->cl; ++list)
+    if (!rr_import_build_list(con, list))
       return false;
-    }
+
+  if (!rr_import_list_state_mark_current(configHash))
+  {
+    LOG_ERROR("failed to mark the list snapshot current");
+    return false;
   }
 
   LOG_INFO("done");
@@ -2434,6 +2580,67 @@ static void rr_import_hash_config_value(RRSHA256 *ctx, const char *value)
 {
   const char *safe = value ? value : "";
   rr_sha256_update(ctx, safe, strlen(safe) + 1);
+}
+
+static void rr_import_hash_list_value(RRSHA256 *ctx, const char *value)
+{
+  const uint8_t present = value ? 1 : 0;
+
+  rr_sha256_update(ctx, &present, sizeof(present));
+  if (value)
+    rr_sha256_update(ctx, value, strlen(value) + 1);
+}
+
+static void rr_import_hash_list_array(RRSHA256 *ctx, const char **values)
+{
+  static const uint8_t end     = 0xff;
+  const uint8_t        present = values ? 1 : 0;
+
+  rr_sha256_update(ctx, &present, sizeof(present));
+  if (values)
+    for (const char **value = values; *value; ++value)
+      rr_import_hash_list_value(ctx, *value);
+
+  rr_sha256_update(ctx, &end, sizeof(end));
+}
+
+static void rr_import_hash_list_filter(
+  RRSHA256 *ctx, const ConfigFilter *filter)
+{
+  rr_import_hash_list_array(ctx, filter->match );
+  rr_import_hash_list_array(ctx, filter->ignore);
+}
+
+static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE])
+{
+  RRSHA256 ctx;
+  uint8_t  digest[RR_SHA256_DIGEST_SIZE];
+
+  rr_sha256_init(&ctx);
+  rr_sha256_update(&ctx, RR_IMPORT_LIST_VERSION,
+    sizeof(RR_IMPORT_LIST_VERSION));
+
+  for (const ConfigList *list = g_config.lists;
+       list && list->name;
+       ++list)
+  {
+    const uint8_t build = list->build_list ? 1 : 0;
+
+    rr_sha256_update(&ctx, &build, sizeof(build));
+    rr_import_hash_list_value (&ctx, list->name     );
+    rr_import_hash_list_value (&ctx, list->registrar);
+    rr_import_hash_list_array (&ctx, list->sources  );
+    rr_import_hash_list_array (&ctx, list->include  );
+    rr_import_hash_list_array (&ctx, list->exclude  );
+    rr_import_hash_list_filter(&ctx, &list->org_handle);
+    rr_import_hash_list_filter(&ctx, &list->org_name  );
+    rr_import_hash_list_filter(&ctx, &list->org_descr );
+    rr_import_hash_list_filter(&ctx, &list->ip_netname);
+    rr_import_hash_list_filter(&ctx, &list->ip_descr  );
+  }
+
+  rr_sha256_final(&ctx, digest);
+  rr_sha256_hex(digest, out_hash);
 }
 
 static void rr_import_source_config_hash(
@@ -2556,7 +2763,7 @@ bool rr_import_run(void)
 {
   int rc;
   bool rebuild_unions = false;
-  bool rebuild_lists  = false;
+  bool rebuild_lists  = true;
   bool check_unions    = true;
   while(true)
   {
@@ -2778,22 +2985,33 @@ bool rr_import_run(void)
 
         //finalize the registrar
         LOG_INFO("merging staged import");
-        if (
-          !rr_import_org_merge_insert       (registrar_id, serial) ||
-          !rr_import_org_merge_update       (registrar_id, serial) ||
-          !rr_import_netblockv4_merge_insert(registrar_id, serial) ||
-          !rr_import_netblockv4_merge_update(registrar_id, serial) ||
-          !rr_import_netblockv6_merge_insert(registrar_id, serial) ||
-          !rr_import_netblockv6_merge_update(registrar_id, serial) ||
-          !rr_import_netblockv4_delete_old  (registrar_id) ||
-          !rr_import_netblockv6_delete_old  (registrar_id) ||
-          !rr_import_netblockv4_link_org    (registrar_id) ||
-          !rr_import_netblockv6_link_org    (registrar_id) ||
-          !rr_import_org_delete_old         (registrar_id) ||
-          !rr_import_unions_mark_dirty      () ||
-          !rr_import_registrar_update_serial(registrar_id, serial,
-            &sourceState) ||
-          !rr_db_commit                     (con))
+        unsigned long long linkedIPv4      = 0;
+        unsigned long long linkedIPv6      = 0;
+        const bool         merged          =
+          rr_import_org_merge_insert       (registrar_id, serial) &&
+          rr_import_org_merge_update       (registrar_id, serial) &&
+          rr_import_netblockv4_merge_insert(registrar_id, serial) &&
+          rr_import_netblockv4_merge_update(registrar_id, serial) &&
+          rr_import_netblockv6_merge_insert(registrar_id, serial) &&
+          rr_import_netblockv6_merge_update(registrar_id, serial) &&
+          rr_import_netblockv4_delete_old  (registrar_id) &&
+          rr_import_netblockv6_delete_old  (registrar_id) &&
+          rr_import_netblockv4_link_org    (registrar_id, &linkedIPv4) &&
+          rr_import_netblockv6_link_org    (registrar_id, &linkedIPv6) &&
+          rr_import_org_delete_old         (registrar_id);
+        const bool         coverageChanged = merged &&
+          (s_import.stats.newIPv4     || s_import.stats.deletedIPv4 ||
+           s_import.stats.newIPv6     || s_import.stats.deletedIPv6);
+        const bool         dataChanged     = coverageChanged || (merged &&
+          (s_import.stats.newOrgs     || s_import.stats.updatedOrgs ||
+           s_import.stats.deletedOrgs || s_import.stats.updatedIPv4 ||
+           s_import.stats.updatedIPv6 || linkedIPv4 || linkedIPv6));
+
+        if (!merged ||
+            (dataChanged && !rr_import_state_mark_changed(coverageChanged)) ||
+            !rr_import_registrar_update_serial(registrar_id, serial,
+              &sourceState) ||
+            !rr_db_commit                     (con))
         {
           LOG_ERROR("failed to finalize");
           if (!rr_db_rollback(con))
@@ -2804,8 +3022,8 @@ bool rr_import_run(void)
         }
 
         resultStr = "succeeded";
-        rebuild_unions = true;
-        rebuild_lists  = true;
+        rebuild_unions |= coverageChanged;
+        rebuild_lists  |= dataChanged;
       }
       else
       {

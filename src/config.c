@@ -99,6 +99,10 @@ void rr_resolve_list_children(const char **children)
     for(ConfigList *list = g_config.lists; list->name; ++list)
       if (strcmp(list->name, *listName) == 0)
       {
+        if (list->include_seen)
+          break;
+
+        list->include_seen = true;
         rr_resolve_list_children(list->include);
         rr_resolve_list_children(list->exclude);
         if (list->sources && !list->build_list)
@@ -264,6 +268,9 @@ bool rr_config_init(void)
     rr_resolve_list_children(list->include);
     rr_resolve_list_children(list->exclude);
   }
+
+  for (list = g_config.lists; list->name; ++list)
+    list->include_seen = false;
 
   return true;
 }

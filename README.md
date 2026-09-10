@@ -64,7 +64,7 @@ union tables for merged ranges, and list management tables.【F:schema/v1.sql†
 
 Existing installations must apply each newer schema migration in order before
 starting the matching RackRadar binary. For example, upgrading a v1 database
-to the current schema requires all four migrations; start at the next schema
+to the current schema requires all five migrations; start at the next schema
 version after the one already installed:
 
 ```bash
@@ -72,6 +72,7 @@ mysql -u <user> -p rackradar < schema/v2.sql
 mysql -u <user> -p rackradar < schema/v3.sql
 mysql -u <user> -p rackradar < schema/v4.sql
 mysql -u <user> -p rackradar < schema/v5.sql
+mysql -u <user> -p rackradar < schema/v6.sql
 ```
 
 ## Configuration
@@ -156,9 +157,10 @@ lists:
    parsing unchanged data. Changed data is parsed into staging tables and
    merged atomically into the live registrar, organization, and netblock
    tables. Imports run in a loop with a one-second sleep between cycles.
-3. **Union & list rebuilds**: Successful imports trigger recomputation of the
-   merged union tables and any configured named lists so downstream consumers
-   can request condensed ranges.【F:src/import.c†L920-L1002】【F:src/import.c†L1127-L1156】
+3. **Union & list rebuilds**: Imports that change address coverage trigger an
+   atomic refresh of the merged union snapshot. Named lists are rebuilt only
+   when imported data or their configuration changes, so downstream consumers
+   can request current condensed ranges without needless rebuilds.
 4. **HTTP API**: The microhttpd server exposes these endpoints:
    - `/ip/<addr>`: return ownership info for an IPv4 or IPv6 address.
    - `POST /ip/bulk`: return JSON ownership results for up to 100 addresses.
