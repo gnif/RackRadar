@@ -145,31 +145,31 @@ DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
     "a.descr "
   "FROM "
     /* Guard: only proceed if IP is inside the union coverage */
-    "netblock_v4_union u "
-    "JOIN ( "
-      "SELECT end_ip "
+    "(SELECT end_ip "
       "FROM netblock_v4_union "
       "WHERE start_ip <= ? "
       "ORDER BY start_ip DESC "
-      "LIMIT 1 "
-    ") g ON g.end_ip >= ? "
+      "LIMIT 1"
+    ") g "
     /* Real lookup */
-    "JOIN ( "
+    "JOIN ("
       "SELECT id "
       "FROM netblock_v4 "
       "WHERE start_ip <= ? AND end_ip >= ? "
       "ORDER BY start_ip DESC "
-      "LIMIT 1 "
-    ") x ON 1=1 "
+      "LIMIT 1"
+    ") x ON g.end_ip >= ? "
     "JOIN netblock_v4 AS a ON a.id = x.id "
     "LEFT JOIN org AS b ON b.id = a.org_id",
 
-  /* union guard inputs */
+  /* union guard: start_ip <= ip */
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
+
+  /* real lookup: start_ip <= ip AND end_ip >= ip */
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
 
-  /* real lookup inputs */
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
+  /* guard check: g.end_ip >= ip */
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_ipv4, .size = sizeof(this->in_ipv4) },
 
   RRDB_PARAM_OUT,
@@ -263,11 +263,12 @@ int rr_query_netblockv6_by_ip(
   DBQueryData *qd = rr_db_get_con_gudata(con);
 
   qd->lookup_ipv6_by_addr.in_ipv6 = in_ipv6;
-  if (!rr_db_stmt_fetch_one(qd->lookup_ipv6_by_addr.stmt))
-    return false;
+  int rc = rr_db_stmt_fetch_one(qd->lookup_ipv6_by_addr.stmt);
+  if (rc < 1)
+    return rc;
 
   memcpy(out, &qd->lookup_ipv6_by_addr.out, sizeof(*out));
-  return true;
+  return 1;
 }
 #pragma endregion
 

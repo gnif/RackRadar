@@ -617,6 +617,21 @@ unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt)
   return mysql_stmt_insert_id(stmt->stmt);
 }
 
+static void rr_db_stmt_terminate_strings(RRDBStmt *stmt)
+{
+  for(size_t i = 0; i < stmt->out_params; ++i)
+  {
+    if (stmt->rtypes[i] != RRDB_TYPE_STRING || !stmt->rbind[i].buffer)
+      continue;
+
+    char *str = stmt->rbind[i].buffer;
+    if (stmt->ris_null[i])
+      str[0] = '\0';
+    else
+      str[MIN(stmt->rlengths[i], stmt->rbind[i].buffer_length)] = '\0';
+  }
+}
+
 int rr_db_stmt_fetch_one(RRDBStmt *stmt)
 {
   int ret = -1;
@@ -643,13 +658,7 @@ int rr_db_stmt_fetch_one(RRDBStmt *stmt)
     goto err;
   }
 
-  // null terminate strings
-  for(int i = 0; i < stmt->out_params; ++i)
-    if (stmt->rtypes[i] == RRDB_TYPE_STRING)
-    {
-      char *str = stmt->rbind[i].buffer;
-      str[stmt->rlengths[i]] = '\0';
-    }
+  rr_db_stmt_terminate_strings(stmt);
 
   ret = 1;
 err:
@@ -705,13 +714,7 @@ int rr_db_stmt_fetch(RRDBStmt *stmt)
     goto err;
   }
 
-  // null terminate strings
-  for(int i = 0; i < stmt->out_params; ++i)
-    if (stmt->rtypes[i] == RRDB_TYPE_STRING)
-    {
-      char *str = stmt->rbind[i].buffer;
-      str[stmt->rlengths[i]] = '\0';
-    }
+  rr_db_stmt_terminate_strings(stmt);
 
   ret = 1;
 err:

@@ -15,8 +15,8 @@ lookup responses over libmicrohttpd.
   `schema/v1.sql`, with helper union tables for merged ranges.
 - Builds named lists using include/exclude filters across organization and
   netblock fields and publishes merged list ranges for efficient consumption.
-- Provides HTTP endpoints to query a single IP or download the ranges for a
-  configured list.
+- Provides HTTP endpoints to query one IP, query up to 100 IPs in one request,
+  or download the ranges for a configured list.
 
 ## Dependencies
 
@@ -26,7 +26,7 @@ RackRadar is written in C and built with CMake. The project relies on:
 - MariaDB/MySQL client libraries
 - libcurl, zlib, minizip
 - Expat, ICU, Iconv
-- libmicrohttpd
+- libmicrohttpd, yyjson
 - pthreads
 
 The CMake build links these libraries automatically when present on the
@@ -145,8 +145,9 @@ lists:
 3. **Union & list rebuilds**: Successful imports trigger recomputation of the
    merged union tables and any configured named lists so downstream consumers
    can request condensed ranges.【F:src/import.c†L920-L1002】【F:src/import.c†L1127-L1156】
-4. **HTTP API**: The microhttpd server exposes GET endpoints:
+4. **HTTP API**: The microhttpd server exposes these endpoints:
    - `/ip/<addr>`: return ownership info for an IPv4 or IPv6 address.
+   - `POST /ip/bulk`: return JSON ownership results for up to 100 addresses.
    - `/list/v4/<name>`: stream IPv4 CIDRs for a configured list.
    - `/list/v6/<name>`: stream IPv6 CIDRs for a configured list.
 
@@ -168,9 +169,29 @@ lists:
    # Lookup a single address
    curl http://localhost:8888/ip/8.8.8.8
 
+   # Lookup several addresses with one database connection and HTTP request
+   curl -H 'Content-Type: application/json' \
+     --data '{"ips":["8.8.8.8","2001:4860:4860::8888"]}' \
+     http://localhost:8888/ip/bulk
+
    # Download the IPv4 ranges for a list named "ExampleProvider"
    curl http://localhost:8888/list/v4/ExampleProvider
    ```
+
+The bulk endpoint accepts a JSON object whose only member is `ips`, an array of
+1 to 100 unique, valid IP addresses as strings. The request body is limited to
+16 KiB. Its `results` array preserves request order; each item contains the
+input `ip` and a `found` flag.
+Found items also include `netblock`, `netname`, `org_handle`, `org_name`, and
+`descr`. Invalid requests are rejected as a whole, while valid addresses with
+no matching allocation are returned with `"found": false`. Malformed requests,
+oversized bodies, unsupported media types, and database failures return 400,
+413, 415, and 500 respectively; methods other than POST return 405.
+
+`tools/rackradar_abuse_report.py` uses `/ip/bulk` in batches of 100 by
+default, applies the configured request-rate limit per batch, and falls back to
+the legacy single-address endpoint when bulk lookup is unavailable. Use
+`--batch-size` to reduce the batch size or `--no-bulk` to force legacy lookup.
 
 RackRadar logs import progress and HTTP errors to stdout/stderr by default via
 its logging subsystem.
