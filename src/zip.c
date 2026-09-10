@@ -7,19 +7,12 @@
 #include <minizip/unzip.h>
 #include <minizip/ioapi.h>
 
-typedef struct ZipFileCtx
-{
-  FILE *fp;
-}
-ZipFileCtx;
-
 static voidpf ZCALLBACK zopen64_file(voidpf opaque, const void *filename, int mode)
 {
   (void)filename;
-  ZipFileCtx *ctx = (ZipFileCtx *)opaque;
   if ((mode & ZLIB_FILEFUNC_MODE_READ) == 0)
     return NULL;
-  return ctx->fp;
+  return opaque;
 }
 
 static uLong ZCALLBACK zread_file(voidpf opaque, voidpf stream, void* buf, uLong size)
@@ -49,8 +42,8 @@ static long ZCALLBACK zseek64_file(voidpf opaque, voidpf stream, ZPOS64_T offset
 
 static int ZCALLBACK zclose_file(voidpf opaque, voidpf stream)
 {
-  ZipFileCtx *ctx = (ZipFileCtx *)opaque;
-  free(ctx);
+  (void)opaque;
+  (void)stream;
   return 0;
 }
 
@@ -71,18 +64,9 @@ unzFile rr_zip_openFILE(FILE *fp)
     return NULL;
   }
 
-  ZipFileCtx *ctx = calloc(1, sizeof(*ctx));
-  if (!ctx)
-  {
-    LOG_ERROR("out of memory");
-    return NULL;
-  }
-
-  ctx->fp = fp;
-
   zlib_filefunc64_def ff =
   {
-    .opaque       = ctx,
+    .opaque       = fp,
     .zopen64_file = zopen64_file,
     .zread_file   = zread_file,
     .zwrite_file  = zwrite_file,
@@ -96,7 +80,6 @@ unzFile rr_zip_openFILE(FILE *fp)
   if (!uf)
   {
     LOG_ERROR("unzOpen2_64 failed");
-    free(ctx);
     return NULL;
   }
 
