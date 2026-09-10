@@ -2686,6 +2686,7 @@ static void rr_import_source_config_hash(
   rr_import_hash_config_value(&ctx, source->name    );
   rr_import_hash_config_value(&ctx, source->url     );
   rr_import_hash_config_value(&ctx, source->user    );
+  rr_import_hash_config_value(&ctx, source->pass    );
   rr_import_hash_config_value(&ctx, source->extra_v4);
   rr_import_hash_config_value(&ctx, source->extra_v6);
   rr_sha256_final(&ctx, digest);
