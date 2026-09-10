@@ -177,11 +177,66 @@ static size_t scrub_invalid_utf8_inplace(char *s, size_t cap)
   return o;
 }
 
+static bool is_valid_utf8(const char *text, size_t len)
+{
+  const unsigned char *bytes = (const unsigned char *)text;
+  size_t               pos   = 0;
+
+  while (pos < len)
+  {
+    const unsigned char lead = bytes[pos];
+    size_t              need;
+
+    if (lead < 0x80)
+    {
+      ++pos;
+      continue;
+    }
+
+    if (lead >= 0xC2 && lead <= 0xDF)
+      need = 2;
+    else if (lead >= 0xE0 && lead <= 0xEF)
+      need = 3;
+    else if (lead >= 0xF0 && lead <= 0xF4)
+      need = 4;
+    else
+      return false;
+
+    if (need > len - pos)
+      return false;
+
+    for (size_t i = 1; i < need; ++i)
+    {
+      if ((bytes[pos + i] & 0xC0) != 0x80)
+        return false;
+    }
+
+    const unsigned char next = bytes[pos + 1];
+    if ((lead == 0xE0 && next < 0xA0) ||
+        (lead == 0xED && next > 0x9F) ||
+        (lead == 0xF0 && next < 0x90) ||
+        (lead == 0xF4 && next > 0x8F))
+      return false;
+
+    pos += need;
+  }
+
+  return true;
+}
+
 bool rr_sanatize(char *text, size_t maxLen)
 {
-  bool ret = false;
-  char *buf = NULL;
+  bool   ret     = false;
+  char  *buf     = NULL;
   size_t textLen = strlen(text);
+
+  if (is_valid_utf8(text, textLen))
+  {
+    if (textLen >= maxLen)
+      scrub_invalid_utf8_inplace(text, maxLen);
+
+    return true;
+  }
 
   UErrorCode status = U_ZERO_ERROR;
   UCharsetDetector *det = ucsdet_open(&status);
