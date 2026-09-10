@@ -51,26 +51,37 @@ The resulting executable `RackRadar` is produced in the `build/` directory.
 ## Database setup
 
 RackRadar expects a MariaDB/MySQL database. For a fresh installation, create a
-database and user, then apply `schema/v1.sql`, `schema/v7.sql`, and
-`schema/v8.sql`. The v1 schema contains the changes covered by migrations v2
-through v6:
+database and user, then apply `schema/v1.sql` followed by `schema/v7.sql`
+through `schema/v9.sql`. The v1 schema contains the changes covered by
+migrations v2 through v6:
 
 ```bash
+set -e
 mysql -u <user> -p -e "CREATE DATABASE rackradar CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u <user> -p rackradar < schema/v1.sql
 mysql -u <user> -p rackradar < schema/v7.sql
 mysql -u <user> -p rackradar < schema/v8.sql
+mysql -u <user> -p rackradar < schema/v9.sql
 ```
 
 The schema defines tables for registrars, organizations, IPv4/IPv6 netblocks,
-union tables for merged ranges, and list management tables.【F:schema/v1.sql†L1-L200】【F:schema/v1.sql†L200-L232】
+indexed email domains and their organization/netblock relationships, union
+tables for merged ranges, and list management tables.
+【F:schema/v1.sql†L1-L200】【F:schema/v1.sql†L200-L232】
 
 Existing installations must apply each newer schema migration in order before
-starting the matching RackRadar binary. For example, upgrading a v1 database
-to the current schema requires all seven migrations; start at the next schema
-version after the one already installed:
+starting the matching RackRadar binary. Stop RackRadar before applying the
+migrations, and leave it stopped until every migration succeeds. In particular,
+`schema/v9.sql` backfills the normalized email-domain relationships, removes the
+legacy packed email fields, and resets import staging tables, so it must not run
+concurrently with an import. Back up the database first: DDL auto-commits, so
+this migration cannot be rolled back as one unit. For example, upgrading a v1
+database to the current schema requires all eight migrations; start at the next
+schema version after the one already installed:
 
 ```bash
+set -e
+sudo systemctl stop rackradar.service
 mysql -u <user> -p rackradar < schema/v2.sql
 mysql -u <user> -p rackradar < schema/v3.sql
 mysql -u <user> -p rackradar < schema/v4.sql
@@ -78,7 +89,12 @@ mysql -u <user> -p rackradar < schema/v5.sql
 mysql -u <user> -p rackradar < schema/v6.sql
 mysql -u <user> -p rackradar < schema/v7.sql
 mysql -u <user> -p rackradar < schema/v8.sql
+mysql -u <user> -p rackradar < schema/v9.sql
+sudo systemctl start rackradar.service
 ```
+
+Schema migrations are immutable once deployed. Put later schema changes in a
+new migration rather than modifying an earlier migration on an upgraded host.
 
 ## Configuration
 
@@ -91,16 +107,19 @@ Key options include:
 - `sources`: one or more RIR downloads with `type` (`RPSL` or `ARIN`),
   `frequency` (seconds between imports), `url`, and optional HTTP `user`/`pass`.
 - `lists`: named list definitions with optional `include`/`exclude` arrays and
-  per-field filters (`ip.netname`, `ip.descr`, `ip.email`, `org.handle`,
-  `org.name`, `org.descr`, `org.email`). Filter names use underscores in the
-  configuration, for example `ip_email` and `org_email`.
+  per-field filters (`ip_netname`, `ip_descr`, `ip_email`, `org_handle`,
+  `org_name`, `org_descr`, and `org_email`).
 
-Email filters use the same SQL `LIKE` patterns as the other fields. RackRadar
-extracts valid addresses directly embedded in RPSL organization/netblock
-attribute values, including remarks, notify, and e-mail values, and from ARIN
-organization/netblock comments. Multiple addresses are deduplicated
-case-insensitively. Reference-only contact handles, such as RPSL `abuse-c` and
-ARIN `pocLinks`, are not dereferenced.
+RackRadar validates addresses embedded in RPSL organization/netblock attribute
+values, including remarks, notify, and e-mail values, and in ARIN
+organization/netblock comments. It stores only the lowercase domain and
+deduplicates domains case-insensitively. `org_email` searches domains associated
+with the organization, while `ip_email` searches those associated directly
+with the netblock. These filters use SQL `LIKE` patterns against domain names,
+so patterns must omit the `@` and local part; for example, use `example.com`
+for an exact domain or `%.example.com` for its subdomains. Reference-only
+contact handles, such as RPSL `abuse-c` and ARIN `pocLinks`, are not
+dereferenced.
 
 ### Example configuration
 
@@ -157,7 +176,7 @@ lists:
     };
     org_email:
     {
-      match : [ "%@example.com%" ];
+      match : [ "example.com" ];
       ignore: [];
     };
   };

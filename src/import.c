@@ -12,11 +12,14 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <signal.h>
+#include <limits.h>
 
-#define RR_IMPORT_BATCH_ROWS            64
-#define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
-#define RR_IMPORT_LIST_VERSION          "RackRadar-list-builder-v2"
-#define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v3"
+#define RR_EMAIL_DOMAIN_SIZE              254
+#define RR_IMPORT_BATCH_ROWS              64
+#define RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS 256
+#define RR_IMPORT_LIST_UNION_BATCH_ROWS   256
+#define RR_IMPORT_LIST_VERSION            "RackRadar-list-builder-v3"
+#define RR_IMPORT_PARSER_VERSION          "RackRadar-source-parser-v3"
 
 typedef struct RRImportSourceState
 {
@@ -37,6 +40,14 @@ typedef struct RRImportRegistrar
   RRImportSourceState source;
 }
 RRImportRegistrar;
+
+typedef struct RRImportEmailDomain
+{
+  unsigned           registrarId;
+  unsigned long long recordId;
+  char               domain[RR_EMAIL_DOMAIN_SIZE];
+}
+RRImportEmailDomain;
 
 typedef struct RRImportBatch
 {
@@ -63,6 +74,14 @@ typedef struct RRImportBatch
     size_t         count;
   }
   ipv6;
+
+  struct
+  {
+    RRDBStmt           *stmt;
+    RRImportEmailDomain rows[RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS];
+    size_t              count;
+  }
+  emailDomain;
 }
 RRImportBatch;
 
@@ -126,6 +145,7 @@ typedef struct RRImport
   RRDBStatistics          stats;
   RRImportBatch           batch;
   RRImportListUnionBatch  listUnionBatch;
+  unsigned long long      nextEmailRecordId;
   bool                    lockHeld;
 
   STMT_STRUCT(registrar_insert,
@@ -174,6 +194,8 @@ typedef struct RRImport
   );
 
   STMT_STRUCT(org_stage_truncate,);
+
+  STMT_STRUCT(email_domain_stage_truncate,);
 
   STMT_STRUCT(org_merge_insert,
     unsigned in_serial;
@@ -234,6 +256,34 @@ typedef struct RRImport
   );
 
   STMT_STRUCT(netblockv6_link_org,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(email_domain_merge_insert,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(org_email_domain_delete,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(org_email_domain_insert,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv4_email_domain_delete,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv4_email_domain_insert,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv6_email_domain_delete,
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv6_email_domain_insert,
     unsigned in_registrar_id;
   );
 
@@ -324,6 +374,7 @@ static void rr_import_log_timing(
   X(import_lock_release           ) \
   X(org_insert                    ) \
   X(org_stage_truncate            ) \
+  X(email_domain_stage_truncate   ) \
   X(org_merge_insert              ) \
   X(org_merge_update              ) \
   X(org_delete_old                ) \
@@ -339,6 +390,13 @@ static void rr_import_log_timing(
   X(netblockv6_merge_update       ) \
   X(netblockv6_delete_old         ) \
   X(netblockv6_link_org           ) \
+  X(email_domain_merge_insert     ) \
+  X(org_email_domain_delete       ) \
+  X(org_email_domain_insert       ) \
+  X(netblockv4_email_domain_delete) \
+  X(netblockv4_email_domain_insert) \
+  X(netblockv6_email_domain_delete) \
+  X(netblockv6_email_domain_insert) \
   X(unions_dirty_get              ) \
   X(import_state_mark_changed     ) \
   X(list_state_get                ) \
@@ -487,7 +545,7 @@ DEFAULT_STMT(RRImport, org_insert,
     "handle, "
     "name, "
     "descr, "
-    "email"
+    "email_record_id"
   ") VALUES ("
     "?,"
     "?,"
@@ -495,24 +553,28 @@ DEFAULT_STMT(RRImport, org_insert,
     "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "name   = VALUES(name), "
-    "descr  = VALUES(descr), "
-    "email  = VALUES(email)",
+    "name            = VALUES(name), "
+    "descr           = VALUES(descr), "
+    "email_record_id = VALUES(email_record_id)",
 
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.handle       },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.name         },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->in.registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.handle       },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.name         },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->in.emailRecordId }
 );
 
 DEFAULT_STMT(RRImport, org_stage_truncate,
   "TRUNCATE TABLE org_stage"
 );
 
+DEFAULT_STMT(RRImport, email_domain_stage_truncate,
+  "TRUNCATE TABLE email_domain_stage"
+);
+
 DEFAULT_STMT(RRImport, org_merge_insert,
-  "INSERT INTO org (registrar_id, serial, handle, name, descr, email) "
-  "SELECT s.registrar_id, ?, s.handle, s.name, s.descr, s.email "
+  "INSERT INTO org (registrar_id, serial, handle, name, descr) "
+  "SELECT s.registrar_id, ?, s.handle, s.name, s.descr "
   "FROM org_stage s "
   "LEFT JOIN org o "
     "ON o.registrar_id = s.registrar_id "
@@ -527,12 +589,11 @@ DEFAULT_STMT(RRImport, org_merge_update,
   "JOIN org_stage s "
     "ON s.registrar_id = o.registrar_id "
     "AND s.handle = o.handle "
-  "SET o.serial = ?, o.name = s.name, o.descr = s.descr, o.email = s.email "
+  "SET o.serial = ?, o.name = s.name, o.descr = s.descr "
   "WHERE o.registrar_id = ? "
   "AND ("
     "NOT (CAST(o.name AS BINARY) <=> CAST(s.name AS BINARY)) OR "
-    "NOT (CAST(o.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
-    "NOT (CAST(o.email AS BINARY) <=> CAST(s.email AS BINARY))"
+    "NOT (CAST(o.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -556,7 +617,7 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
     "prefix_len, "
     "netname, "
     "descr, "
-    "email"
+    "email_record_id"
   ") VALUES ("
     "?,"
     "?,"
@@ -567,19 +628,19 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
     "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "prefix_len = VALUES(prefix_len), "
-    "netname = VALUES(netname), "
-    "descr   = VALUES(descr), "
-    "email   = VALUES(email)",
+    "prefix_len      = VALUES(prefix_len), "
+    "netname         = VALUES(netname), "
+    "descr           = VALUES(descr), "
+    "email_record_id = VALUES(email_record_id)",
 
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.startAddr.v4 },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.endAddr  .v4 },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.netname      },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->in.registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.org_handle   },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->in.startAddr.v4 },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->in.endAddr  .v4 },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &this->in.prefixLen    },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.netname      },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->in.emailRecordId }
 );
 
 DEFAULT_STMT(RRImport, netblockv4_stage_truncate,
@@ -588,10 +649,10 @@ DEFAULT_STMT(RRImport, netblockv4_stage_truncate,
 
 DEFAULT_STMT(RRImport, netblockv4_merge_insert,
   "INSERT INTO netblock_v4 ("
-    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
   ") "
   "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
-    "s.prefix_len, s.netname, s.descr, s.email "
+    "s.prefix_len, s.netname, s.descr "
   "FROM netblock_v4_stage s "
   "LEFT JOIN netblock_v4 nb "
     "ON nb.registrar_id = s.registrar_id "
@@ -614,14 +675,12 @@ DEFAULT_STMT(RRImport, netblockv4_merge_update,
     "nb.serial = ?, "
     "nb.prefix_len = s.prefix_len, "
     "nb.netname = s.netname, "
-    "nb.descr = s.descr, "
-    "nb.email = s.email "
+    "nb.descr = s.descr "
   "WHERE nb.registrar_id = ? "
   "AND ("
     "nb.prefix_len != s.prefix_len OR "
     "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
-    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
-    "NOT (CAST(nb.email AS BINARY) <=> CAST(s.email AS BINARY))"
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -661,7 +720,7 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
     "prefix_len, "
     "netname, "
     "descr, "
-    "email"
+    "email_record_id"
   ") VALUES ("
     "?,"
     "?,"
@@ -672,19 +731,19 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
     "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "prefix_len = VALUES(prefix_len), "
-    "netname = VALUES(netname), "
-    "descr   = VALUES(descr), "
-    "email   = VALUES(email)",
+    "prefix_len      = VALUES(prefix_len), "
+    "netname         = VALUES(netname), "
+    "descr           = VALUES(descr), "
+    "email_record_id = VALUES(email_record_id)",
 
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
-  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.startAddr.v6, .size = sizeof(this->in.startAddr) },
-  &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.endAddr  .v6, .size = sizeof(this->in.endAddr  ) },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.netname      },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &this->in.registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.org_handle   },
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->in.startAddr.v6, .size = sizeof(this->in.startAddr) },
+  &(RRDBParam){ .type = RRDB_TYPE_BINARY , .bind = &this->in.endAddr  .v6, .size = sizeof(this->in.endAddr  ) },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &this->in.prefixLen    },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.netname      },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &this->in.emailRecordId }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_stage_truncate,
@@ -693,10 +752,10 @@ DEFAULT_STMT(RRImport, netblockv6_stage_truncate,
 
 DEFAULT_STMT(RRImport, netblockv6_merge_insert,
   "INSERT INTO netblock_v6 ("
-    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
   ") "
   "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
-    "s.prefix_len, s.netname, s.descr, s.email "
+    "s.prefix_len, s.netname, s.descr "
   "FROM netblock_v6_stage s "
   "LEFT JOIN netblock_v6 nb "
     "ON nb.registrar_id = s.registrar_id "
@@ -719,14 +778,12 @@ DEFAULT_STMT(RRImport, netblockv6_merge_update,
     "nb.serial = ?, "
     "nb.prefix_len = s.prefix_len, "
     "nb.netname = s.netname, "
-    "nb.descr = s.descr, "
-    "nb.email = s.email "
+    "nb.descr = s.descr "
   "WHERE nb.registrar_id = ? "
   "AND ("
     "nb.prefix_len != s.prefix_len OR "
     "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
-    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
-    "NOT (CAST(nb.email AS BINARY) <=> CAST(s.email AS BINARY))"
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -754,6 +811,141 @@ DEFAULT_STMT(RRImport, netblockv6_link_org,
     "SET nb.org_id = o.id "
     "WHERE nb.registrar_id = ? "
     "AND NOT (nb.org_id <=> o.id)",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, email_domain_merge_insert,
+  "INSERT INTO email_domain (domain) "
+  "SELECT DISTINCT staged.domain "
+  "FROM email_domain_stage staged "
+  "JOIN ("
+    "SELECT registrar_id, email_record_id "
+    "FROM org_stage WHERE registrar_id = ? "
+    "UNION ALL "
+    "SELECT registrar_id, email_record_id "
+    "FROM netblock_v4_stage WHERE registrar_id = ? "
+    "UNION ALL "
+    "SELECT registrar_id, email_record_id "
+    "FROM netblock_v6_stage WHERE registrar_id = ?"
+  ") source_record "
+    "ON source_record.registrar_id = staged.registrar_id "
+    "AND source_record.email_record_id = staged.record_id "
+  "LEFT JOIN email_domain existing ON existing.domain = staged.domain "
+  "WHERE existing.id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, org_email_domain_delete,
+  "DELETE relation "
+  "FROM org_email_domain relation "
+  "JOIN org entity ON entity.id = relation.org_id "
+  "JOIN org_stage staged "
+    "ON staged.registrar_id = entity.registrar_id "
+    "AND staged.handle = entity.handle "
+  "JOIN email_domain email ON email.id = relation.email_domain_id "
+  "LEFT JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+    "AND desired.domain = email.domain "
+  "WHERE entity.registrar_id = ? AND desired.record_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, org_email_domain_insert,
+  "INSERT INTO org_email_domain (org_id, email_domain_id) "
+  "SELECT entity.id, email.id "
+  "FROM org_stage staged "
+  "JOIN org entity "
+    "ON entity.registrar_id = staged.registrar_id "
+    "AND entity.handle = staged.handle "
+  "JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+  "JOIN email_domain email ON email.domain = desired.domain "
+  "LEFT JOIN org_email_domain existing "
+    "ON existing.org_id = entity.id "
+    "AND existing.email_domain_id = email.id "
+  "WHERE staged.registrar_id = ? AND existing.org_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_email_domain_delete,
+  "DELETE relation "
+  "FROM netblock_v4_email_domain relation "
+  "JOIN netblock_v4 entity ON entity.id = relation.netblock_v4_id "
+  "JOIN netblock_v4_stage staged "
+    "ON staged.registrar_id = entity.registrar_id "
+    "AND staged.org_handle = entity.org_handle "
+    "AND staged.start_ip = entity.start_ip "
+    "AND staged.end_ip = entity.end_ip "
+  "JOIN email_domain email ON email.id = relation.email_domain_id "
+  "LEFT JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+    "AND desired.domain = email.domain "
+  "WHERE entity.registrar_id = ? AND desired.record_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_email_domain_insert,
+  "INSERT INTO netblock_v4_email_domain "
+    "(netblock_v4_id, email_domain_id) "
+  "SELECT entity.id, email.id "
+  "FROM netblock_v4_stage staged "
+  "JOIN netblock_v4 entity "
+    "ON entity.registrar_id = staged.registrar_id "
+    "AND entity.org_handle = staged.org_handle "
+    "AND entity.start_ip = staged.start_ip "
+    "AND entity.end_ip = staged.end_ip "
+  "JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+  "JOIN email_domain email ON email.domain = desired.domain "
+  "LEFT JOIN netblock_v4_email_domain existing "
+    "ON existing.netblock_v4_id = entity.id "
+    "AND existing.email_domain_id = email.id "
+  "WHERE staged.registrar_id = ? AND existing.netblock_v4_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_email_domain_delete,
+  "DELETE relation "
+  "FROM netblock_v6_email_domain relation "
+  "JOIN netblock_v6 entity ON entity.id = relation.netblock_v6_id "
+  "JOIN netblock_v6_stage staged "
+    "ON staged.registrar_id = entity.registrar_id "
+    "AND staged.org_handle = entity.org_handle "
+    "AND staged.start_ip = entity.start_ip "
+    "AND staged.end_ip = entity.end_ip "
+  "JOIN email_domain email ON email.id = relation.email_domain_id "
+  "LEFT JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+    "AND desired.domain = email.domain "
+  "WHERE entity.registrar_id = ? AND desired.record_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_email_domain_insert,
+  "INSERT INTO netblock_v6_email_domain "
+    "(netblock_v6_id, email_domain_id) "
+  "SELECT entity.id, email.id "
+  "FROM netblock_v6_stage staged "
+  "JOIN netblock_v6 entity "
+    "ON entity.registrar_id = staged.registrar_id "
+    "AND entity.org_handle = staged.org_handle "
+    "AND entity.start_ip = staged.start_ip "
+    "AND entity.end_ip = staged.end_ip "
+  "JOIN email_domain_stage desired "
+    "ON desired.registrar_id = staged.registrar_id "
+    "AND desired.record_id = staged.email_record_id "
+  "JOIN email_domain email ON email.domain = desired.domain "
+  "LEFT JOIN netblock_v6_email_domain existing "
+    "ON existing.netblock_v6_id = entity.id "
+    "AND existing.email_domain_id = email.id "
+  "WHERE staged.registrar_id = ? AND existing.netblock_v6_id IS NULL",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
@@ -994,9 +1186,11 @@ static int rr_import_registrar_lock(
 
 static void rr_import_batches_reset(void)
 {
-  s_import.batch.org .count = 0;
-  s_import.batch.ipv4.count = 0;
-  s_import.batch.ipv6.count = 0;
+  s_import.batch.org.count         = 0;
+  s_import.batch.ipv4.count        = 0;
+  s_import.batch.ipv6.count        = 0;
+  s_import.batch.emailDomain.count = 0;
+  s_import.nextEmailRecordId       = 0;
 }
 
 static void rr_import_stats_rollback(void)
@@ -1106,12 +1300,109 @@ static bool rr_import_netblockv6_batch_flush(void)
   return true;
 }
 
+static bool rr_import_email_domain_batch_flush(void)
+{
+  const size_t count = s_import.batch.emailDomain.count;
+  if (count == 0)
+    return true;
+
+  // The prepared statement has a fixed size; duplicate the final row as padding.
+  for(size_t i = count; i < RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS; ++i)
+    s_import.batch.emailDomain.rows[i] =
+      s_import.batch.emailDomain.rows[count - 1];
+
+  if (!rr_db_stmt_execute(s_import.batch.emailDomain.stmt, NULL))
+  {
+    LOG_ERROR("failed to write email domain stage batch (%zu rows)", count);
+    return false;
+  }
+
+  s_import.batch.emailDomain.count = 0;
+  return true;
+}
+
 static bool rr_import_batches_flush(void)
 {
   return
     rr_import_org_batch_flush       () &&
     rr_import_netblockv4_batch_flush() &&
-    rr_import_netblockv6_batch_flush();
+    rr_import_netblockv6_batch_flush() &&
+    rr_import_email_domain_batch_flush();
+}
+
+static bool rr_import_email_domains_stage(
+  unsigned            registrarId,
+  unsigned long long  recordId,
+  const char         *domains,
+  size_t              domainsSize)
+{
+  const size_t length = strnlen(domains, domainsSize);
+  if (length == domainsSize)
+  {
+    LOG_ERROR("unterminated email domain list");
+    return false;
+  }
+
+  const char *start = domains;
+  const char *end   = domains + length;
+  while(start < end)
+  {
+    const char   *separator = memchr(start, '\n', (size_t)(end - start));
+    const char   *domainEnd = separator ? separator : end;
+    const size_t  domainLen = (size_t)(domainEnd - start);
+
+    if (domainLen == 0 || domainLen >= RR_EMAIL_DOMAIN_SIZE)
+    {
+      LOG_ERROR("invalid staged email domain length: %zu", domainLen);
+      return false;
+    }
+
+    if (s_import.batch.emailDomain.count >=
+        RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS)
+    {
+      LOG_ERROR("email domain staging batch overflow");
+      return false;
+    }
+
+    const size_t         index = s_import.batch.emailDomain.count++;
+    RRImportEmailDomain *row   =
+      &s_import.batch.emailDomain.rows[index];
+    row->registrarId = registrarId;
+    row->recordId    = recordId;
+    memcpy(row->domain, start, domainLen);
+    row->domain[domainLen] = '\0';
+
+    if (s_import.batch.emailDomain.count ==
+          RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS &&
+        !rr_import_email_domain_batch_flush())
+      return false;
+
+    start = separator ? separator + 1 : end;
+  }
+
+  return true;
+}
+
+static bool rr_import_email_record_prepare(
+  unsigned            registrarId,
+  const char         *domains,
+  size_t              domainsSize,
+  unsigned long long *outRecordId)
+{
+  if (s_import.nextEmailRecordId == ULLONG_MAX)
+  {
+    LOG_ERROR("email staging record identifier overflow");
+    return false;
+  }
+
+  // A base-stage upsert selects this record's domains over older duplicates.
+  const unsigned long long recordId = ++s_import.nextEmailRecordId;
+  if (!rr_import_email_domains_stage(
+      registrarId, recordId, domains, domainsSize))
+    return false;
+
+  *outRecordId = recordId;
+  return true;
 }
 
 bool rr_import_org_insert(RRDBOrg *in_org)
@@ -1125,8 +1416,17 @@ bool rr_import_org_insert(RRDBOrg *in_org)
     return false;
   }
 
-  const size_t index = s_import.batch.org.count++;
-  memcpy(&s_import.batch.org.rows[index], in_org, sizeof(*in_org));
+  const size_t index = s_import.batch.org.count;
+  RRDBOrg     *row   = &s_import.batch.org.rows[index];
+  memcpy(row, in_org, sizeof(*row));
+  if (!rr_import_email_record_prepare(
+      row->registrar_id,
+      row->emailDomains,
+      sizeof(row->emailDomains),
+      &row->emailRecordId))
+    return false;
+
+  ++s_import.batch.org.count;
   ++s_import.stats.processedOrgs;
 
   if (s_import.batch.org.count == RR_IMPORT_BATCH_ROWS)
@@ -1138,6 +1438,11 @@ bool rr_import_org_insert(RRDBOrg *in_org)
 static bool rr_import_org_stage_truncate(void)
 {
   return rr_db_stmt_execute(s_import.org_stage_truncate.stmt, NULL);
+}
+
+static bool rr_import_email_domain_stage_truncate(void)
+{
+  return rr_db_stmt_execute(s_import.email_domain_stage_truncate.stmt, NULL);
 }
 
 static bool rr_import_org_merge_insert(unsigned in_registrar_id, unsigned in_serial)
@@ -1171,8 +1476,17 @@ bool rr_import_netblockv4_insert(RRDBNetBlock *in_netblock)
     return false;
   }
 
-  const size_t index = s_import.batch.ipv4.count++;
-  memcpy(&s_import.batch.ipv4.rows[index], in_netblock, sizeof(*in_netblock));
+  const size_t  index = s_import.batch.ipv4.count;
+  RRDBNetBlock *row   = &s_import.batch.ipv4.rows[index];
+  memcpy(row, in_netblock, sizeof(*row));
+  if (!rr_import_email_record_prepare(
+      row->registrar_id,
+      row->emailDomains,
+      sizeof(row->emailDomains),
+      &row->emailRecordId))
+    return false;
+
+  ++s_import.batch.ipv4.count;
   ++s_import.stats.processedIPv4;
 
   if (s_import.batch.ipv4.count == RR_IMPORT_BATCH_ROWS)
@@ -1224,8 +1538,17 @@ bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
     return false;
   }
 
-  const size_t index = s_import.batch.ipv6.count++;
-  memcpy(&s_import.batch.ipv6.rows[index], in_netblock, sizeof(*in_netblock));
+  const size_t  index = s_import.batch.ipv6.count;
+  RRDBNetBlock *row   = &s_import.batch.ipv6.rows[index];
+  memcpy(row, in_netblock, sizeof(*row));
+  if (!rr_import_email_record_prepare(
+      row->registrar_id,
+      row->emailDomains,
+      sizeof(row->emailDomains),
+      &row->emailRecordId))
+    return false;
+
+  ++s_import.batch.ipv6.count;
   ++s_import.stats.processedIPv6;
 
   if (s_import.batch.ipv6.count == RR_IMPORT_BATCH_ROWS)
@@ -1266,12 +1589,63 @@ static bool rr_import_netblockv6_link_org(
   return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, out_affected);
 }
 
+static bool rr_import_email_domains_merge(
+  unsigned in_registrar_id, unsigned long long *out_changed)
+{
+  unsigned long long affected;
+  unsigned long long changed = 0;
+
+  s_import.email_domain_merge_insert.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(s_import.email_domain_merge_insert.stmt, NULL))
+    return false;
+
+  s_import.org_email_domain_delete.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.org_email_domain_delete.stmt, &affected))
+    return false;
+  changed += affected;
+
+  s_import.org_email_domain_insert.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.org_email_domain_insert.stmt, &affected))
+    return false;
+  changed += affected;
+
+  s_import.netblockv4_email_domain_delete.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.netblockv4_email_domain_delete.stmt, &affected))
+    return false;
+  changed += affected;
+
+  s_import.netblockv4_email_domain_insert.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.netblockv4_email_domain_insert.stmt, &affected))
+    return false;
+  changed += affected;
+
+  s_import.netblockv6_email_domain_delete.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.netblockv6_email_domain_delete.stmt, &affected))
+    return false;
+  changed += affected;
+
+  s_import.netblockv6_email_domain_insert.in_registrar_id = in_registrar_id;
+  if (!rr_db_stmt_execute(
+      s_import.netblockv6_email_domain_insert.stmt, &affected))
+    return false;
+  changed += affected;
+
+  *out_changed = changed;
+  return true;
+}
+
 static bool rr_import_stages_truncate(void)
 {
   return
-    rr_import_org_stage_truncate       () &&
-    rr_import_netblockv4_stage_truncate() &&
-    rr_import_netblockv6_stage_truncate();
+    rr_import_org_stage_truncate         () &&
+    rr_import_netblockv4_stage_truncate  () &&
+    rr_import_netblockv6_stage_truncate  () &&
+    rr_import_email_domain_stage_truncate();
 }
 
 static int rr_import_unions_dirty(bool *out_dirty)
@@ -1514,12 +1888,21 @@ static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned
 
 typedef struct RRImportListQuery
 {
-  RRBuffer  *sql;
-  RRDBParam *params;
-  size_t     paramCount;
-  size_t     paramCapacity;
+  RRBuffer   *sql;
+  RRDBParam  *params;
+  size_t      paramCount;
+  size_t      paramCapacity;
+  const char *ipVersion;
 }
 RRImportListQuery;
+
+typedef enum RRImportListEmailScope
+{
+  RR_IMPORT_LIST_EMAIL_NONE,
+  RR_IMPORT_LIST_EMAIL_ORG,
+  RR_IMPORT_LIST_EMAIL_IP
+}
+RRImportListEmailScope;
 
 static bool db_list_query_add_param(
   RRImportListQuery *query, const char *value)
@@ -1561,6 +1944,107 @@ static bool db_list_query_add_param(
   return true;
 }
 
+static bool db_list_query_add_email_condition(
+  RRImportListQuery     *query,
+  RRImportListEmailScope scope,
+  const char            *value,
+  int                   *conditions)
+{
+  const char *separator = *conditions > 0 ? " OR " : "";
+  switch(scope)
+  {
+    case RR_IMPORT_LIST_EMAIL_ORG:
+      if (!rr_buffer_appendf(query->sql,
+        "%sEXISTS ("
+          "SELECT 1 FROM org_email_domain email_link "
+          "JOIN email_domain email "
+            "ON email.id = email_link.email_domain_id "
+          "WHERE email_link.org_id = org.id "
+            "AND email.domain LIKE ?"
+        ")",
+        separator) ||
+        !db_list_query_add_param(query, value))
+        return false;
+      break;
+
+    case RR_IMPORT_LIST_EMAIL_IP:
+      if (!rr_buffer_appendf(query->sql,
+        "%sEXISTS ("
+          "SELECT 1 FROM netblock_%s_email_domain email_link "
+          "JOIN email_domain email "
+            "ON email.id = email_link.email_domain_id "
+          "WHERE email_link.netblock_%s_id = ip.id "
+            "AND email.domain LIKE ?"
+        ")",
+        separator, query->ipVersion, query->ipVersion) ||
+        !db_list_query_add_param(query, value))
+        return false;
+      break;
+
+    case RR_IMPORT_LIST_EMAIL_NONE:
+      return false;
+  }
+
+  ++*conditions;
+  return true;
+}
+
+static bool db_list_query_add_filter(
+  RRImportListQuery      *query,
+  const ConfigFilter    *filter,
+  bool                   ignores,
+  const char            *field,
+  RRImportListEmailScope emailScope,
+  int                   *conditions)
+{
+  const char **values = ignores ? filter->ignore : filter->match;
+  if (!values)
+    return true;
+
+  for(const char **value = values; *value; ++value)
+  {
+    if (emailScope != RR_IMPORT_LIST_EMAIL_NONE)
+    {
+      if (!db_list_query_add_email_condition(
+          query, emailScope, *value, conditions))
+        return false;
+      continue;
+    }
+
+    if (!rr_buffer_appendf(query->sql, "%s%s LIKE ?",
+        *conditions > 0 ? " OR " : "", field) ||
+        !db_list_query_add_param(query, *value))
+      return false;
+
+    ++*conditions;
+  }
+
+  return true;
+}
+
+static bool db_list_query_add_filters(
+  ConfigList        *cl,
+  RRImportListQuery *query,
+  bool               ignores,
+  int               *conditions)
+{
+  return
+    db_list_query_add_filter(query, &cl->org_handle, ignores,
+      "COALESCE(org.handle, '')", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
+    db_list_query_add_filter(query, &cl->org_name, ignores,
+      "COALESCE(org.name, '')", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
+    db_list_query_add_filter(query, &cl->org_descr, ignores,
+      "COALESCE(org.descr, '')", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
+    db_list_query_add_filter(query, &cl->org_email, ignores,
+      NULL, RR_IMPORT_LIST_EMAIL_ORG, conditions) &&
+    db_list_query_add_filter(query, &cl->ip_netname, ignores,
+      "ip.netname", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
+    db_list_query_add_filter(query, &cl->ip_descr, ignores,
+      "ip.descr", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
+    db_list_query_add_filter(query, &cl->ip_email, ignores,
+      NULL, RR_IMPORT_LIST_EMAIL_IP, conditions);
+}
+
 static bool db_build_list_query_where(
   ConfigList *cl, RRImportListQuery *query)
 {
@@ -1574,30 +2058,6 @@ static bool db_build_list_query_where(
         return false; \
       } \
     } while (0)
-
-  #define LIST_FIELD_org_handle  "org.handle"
-  #define LIST_FIELD_org_name    "org.name"
-  #define LIST_FIELD_org_descr   "org.descr"
-  #define LIST_FIELD_org_email   "COALESCE(org.email, '')"
-  #define LIST_FIELD_ip_netname  "ip.netname"
-  #define LIST_FIELD_ip_descr    "ip.descr"
-  #define LIST_FIELD_ip_email    "COALESCE(ip.email, '')"
-  #define LIST_FIELD_IMPL(x, y)  LIST_FIELD_ ##x ##_ ##y
-  #define LIST_FIELD(x, y)       LIST_FIELD_IMPL(x, y)
-
-  #define ADD_CONDITION(x, y, z) \
-    if (cl->x ##_ ##y.z) \
-      for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
-      { \
-        if (!rr_buffer_appendf(qb, "%s" LIST_FIELD(x, y) " LIKE ?", \
-            conditions > 0 ? " OR " : "")) \
-        { \
-          LOG_ERROR("out of memory"); \
-          return false; \
-        } \
-        if (!db_list_query_add_param(query, *str)) \
-          return false; \
-      } \
 
   bool started = false;
   if (cl->registrar)
@@ -1623,9 +2083,8 @@ static bool db_build_list_query_where(
     started = true;
     int conditions = 0;
     APPEND_OR_FAIL(qb, "(");
-    #define X(x, y) ADD_CONDITION(x, y, match)
-    CONFIG_LIST_FIELDS
-    #undef X
+    if (!db_list_query_add_filters(cl, query, false, &conditions))
+      return false;
     APPEND_OR_FAIL(qb, ")");
 
     if (cl->has_ignores)
@@ -1633,9 +2092,8 @@ static bool db_build_list_query_where(
       APPEND_OR_FAIL(qb, " AND NOT (");
 
       conditions = 0;
-      #define X(x, y) ADD_CONDITION(x, y, ignore)
-      CONFIG_LIST_FIELDS
-      #undef X
+      if (!db_list_query_add_filters(cl, query, true, &conditions))
+        return false;
       APPEND_OR_FAIL(qb, ")");
     }
 
@@ -1689,16 +2147,6 @@ static bool db_build_list_query_where(
       }
   }
 
-  #undef ADD_CONDITION
-  #undef LIST_FIELD
-  #undef LIST_FIELD_IMPL
-  #undef LIST_FIELD_ip_email
-  #undef LIST_FIELD_ip_descr
-  #undef LIST_FIELD_ip_netname
-  #undef LIST_FIELD_org_email
-  #undef LIST_FIELD_org_descr
-  #undef LIST_FIELD_org_name
-  #undef LIST_FIELD_org_handle
   #undef APPEND_OR_FAIL
   return true;
 }
@@ -1710,7 +2158,8 @@ static RRDBStmt *rr_import_prepare_org_batch(RRDBCon *con)
   size_t    param = 0;
 
   if (rr_buffer_append_str(&sql,
-    "INSERT INTO org_stage (registrar_id, handle, name, descr, email) VALUES ") < 0)
+    "INSERT INTO org_stage "
+      "(registrar_id, handle, name, descr, email_record_id) VALUES ") < 0)
     goto fail;
 
   for(size_t i = 0; i < RR_IMPORT_BATCH_ROWS; ++i)
@@ -1719,16 +2168,18 @@ static RRDBStmt *rr_import_prepare_org_batch(RRDBCon *con)
       goto fail;
 
     RRDBOrg *row = &s_import.batch.org.rows[i];
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &row->registrar_id };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->handle       };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->name         };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr        };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->email        };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &row->registrar_id };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->handle       };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->name         };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->descr        };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &row->emailRecordId };
   }
 
   if (rr_buffer_append_str(&sql,
     " ON DUPLICATE KEY UPDATE "
-      "name = VALUES(name), descr = VALUES(descr), email = VALUES(email)") < 0)
+      "name = VALUES(name), "
+      "descr = VALUES(descr), "
+      "email_record_id = VALUES(email_record_id)") < 0)
     goto fail;
 
   RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
@@ -1750,7 +2201,8 @@ static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
 
   if (!rr_buffer_appendf(&sql,
     "INSERT INTO netblock_%s_stage ("
-      "registrar_id, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
+      "registrar_id, org_handle, start_ip, end_ip, prefix_len, "
+      "netname, descr, email_record_id"
     ") VALUES ",
     ipv6 ? "v6" : "v4"))
     goto fail;
@@ -1764,8 +2216,8 @@ static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
       ? &s_import.batch.ipv6.rows[i]
       : &s_import.batch.ipv4.rows[i];
 
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &row->registrar_id };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->org_handle   };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT   , .bind = &row->registrar_id };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->org_handle   };
     if (ipv6)
     {
       params[param++] = (RRDBParam)
@@ -1786,10 +2238,10 @@ static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
       params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &row->startAddr.v4 };
       params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &row->endAddr  .v4 };
     }
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &row->prefixLen };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->netname   };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr     };
-    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->email     };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8  , .bind = &row->prefixLen    };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->netname      };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING , .bind = &row->descr        };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UBIGINT, .bind = &row->emailRecordId };
   }
 
   if (rr_buffer_append_str(&sql,
@@ -1797,7 +2249,7 @@ static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
       "prefix_len = VALUES(prefix_len), "
       "netname = VALUES(netname), "
       "descr = VALUES(descr), "
-      "email = VALUES(email)") < 0)
+      "email_record_id = VALUES(email_record_id)") < 0)
     goto fail;
 
   RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
@@ -1811,22 +2263,74 @@ fail:
   return NULL;
 }
 
+static RRDBStmt *rr_import_prepare_email_domain_batch(RRDBCon *con)
+{
+  RRBuffer  sql = { 0 };
+  RRDBParam params[RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS * 3];
+  size_t    param = 0;
+
+  if (rr_buffer_append_str(&sql,
+    "INSERT INTO email_domain_stage "
+      "(registrar_id, record_id, domain) VALUES ") < 0)
+    goto fail;
+
+  for(size_t i = 0; i < RR_IMPORT_EMAIL_DOMAIN_BATCH_ROWS; ++i)
+  {
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?)", i == 0 ? "" : ","))
+      goto fail;
+
+    RRImportEmailDomain *row = &s_import.batch.emailDomain.rows[i];
+    params[param++] = (RRDBParam)
+    {
+      .type = RRDB_TYPE_UINT,
+      .bind = &row->registrarId
+    };
+    params[param++] = (RRDBParam)
+    {
+      .type = RRDB_TYPE_UBIGINT,
+      .bind = &row->recordId
+    };
+    params[param++] = (RRDBParam)
+    {
+      .type = RRDB_TYPE_STRING,
+      .bind = row->domain
+    };
+  }
+
+  if (rr_buffer_append_str(&sql,
+    " ON DUPLICATE KEY UPDATE domain = VALUES(domain)") < 0)
+    goto fail;
+
+  RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
+    params, ARRAY_SIZE(params), NULL, 0);
+  rr_buffer_free(&sql);
+  return stmt;
+
+fail:
+  LOG_ERROR("failed to construct the email domain batch statement");
+  rr_buffer_free(&sql);
+  return NULL;
+}
+
 static bool rr_import_batches_prepare(RRDBCon *con)
 {
-  s_import.batch.org .stmt = rr_import_prepare_org_batch     (con);
-  s_import.batch.ipv4.stmt = rr_import_prepare_netblock_batch(con, false);
-  s_import.batch.ipv6.stmt = rr_import_prepare_netblock_batch(con, true );
+  s_import.batch.org.stmt         = rr_import_prepare_org_batch         (con);
+  s_import.batch.ipv4.stmt        = rr_import_prepare_netblock_batch    (con, false);
+  s_import.batch.ipv6.stmt        = rr_import_prepare_netblock_batch    (con, true );
+  s_import.batch.emailDomain.stmt = rr_import_prepare_email_domain_batch(con);
   return
-    s_import.batch.org .stmt &&
+    s_import.batch.org.stmt &&
     s_import.batch.ipv4.stmt &&
-    s_import.batch.ipv6.stmt;
+    s_import.batch.ipv6.stmt &&
+    s_import.batch.emailDomain.stmt;
 }
 
 static void rr_import_batches_free(void)
 {
-  rr_db_stmt_free(&s_import.batch.org .stmt);
+  rr_db_stmt_free(&s_import.batch.org.stmt);
   rr_db_stmt_free(&s_import.batch.ipv4.stmt);
   rr_db_stmt_free(&s_import.batch.ipv6.stmt);
+  rr_db_stmt_free(&s_import.batch.emailDomain.stmt);
   rr_import_batches_reset();
 }
 
@@ -1973,6 +2477,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
       const char *ver = n == 0 ? "v4" : "v6";
       rr_buffer_reset(&qb);
       query.paramCount = 0;
+      query.ipVersion  = ver;
       if (!db_list_query_add_param(&query, list->in_list_name))
         goto fail_list_query;
 
@@ -3282,7 +3787,8 @@ bool rr_import_run(void)
       fclose(fp);
       rr_import_log_timing("parse/stage", src->name, startTime);
 
-      const char *resultStr;
+      const char        *resultStr;
+      unsigned long long emailLinksChanged = 0;
       if (success && !s_import_stop_requested)
       {
         const uint64_t lockStarted = rr_microtime();
@@ -3345,14 +3851,17 @@ bool rr_import_run(void)
           rr_import_netblockv6_delete_old  (registrar_id) &&
           rr_import_netblockv4_link_org    (registrar_id, &linkedIPv4) &&
           rr_import_netblockv6_link_org    (registrar_id, &linkedIPv6) &&
-          rr_import_org_delete_old         (registrar_id);
+          rr_import_org_delete_old         (registrar_id) &&
+          rr_import_email_domains_merge    (registrar_id,
+            &emailLinksChanged);
         const bool         coverageChanged = merged &&
           (s_import.stats.newIPv4     || s_import.stats.deletedIPv4 ||
            s_import.stats.newIPv6     || s_import.stats.deletedIPv6);
         const bool         dataChanged     = coverageChanged || (merged &&
           (s_import.stats.newOrgs     || s_import.stats.updatedOrgs ||
            s_import.stats.deletedOrgs || s_import.stats.updatedIPv4 ||
-           s_import.stats.updatedIPv6 || linkedIPv4 || linkedIPv6));
+           s_import.stats.updatedIPv6 || linkedIPv4 || linkedIPv6 ||
+           emailLinksChanged));
         const bool         finalized       = merged &&
           !s_import_stop_requested &&
           (!dataChanged || rr_import_state_mark_changed(coverageChanged)) &&
@@ -3368,6 +3877,7 @@ bool rr_import_run(void)
           if (!rr_db_rollback(con))
             goto fail_con;
           rr_import_stats_rollback();
+          emailLinksChanged = 0;
           resultStr = "failed";
           goto log_result;
         }
@@ -3411,6 +3921,7 @@ log_result:
       LOG_INFO("  New      : %llu", s_import.stats.newIPv6      );
       LOG_INFO("  Updated  : %llu", s_import.stats.updatedIPv6  );
       LOG_INFO("  Deleted  : %llu", s_import.stats.deletedIPv6  );
+      LOG_INFO("Email domain links changed: %llu", emailLinksChanged);
     }
 
     if (s_import_stop_requested)

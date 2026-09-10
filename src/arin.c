@@ -55,7 +55,7 @@ struct ProcessState
   size_t  textPtrSz;
 
   bool    inEmail;
-  char    emailValue[512];
+  char    emailText[512];
 
   bool    inComment;
   char   *commentPtr;
@@ -65,12 +65,12 @@ struct ProcessState
 
 static void setup_email(struct ProcessState *state)
 {
-  state->emailValue[0] = '\0';
-  state->textPtr       = state->emailValue;
-  state->textPtrSz     = sizeof(state->emailValue);
+  state->emailText[0] = '\0';
+  state->textPtr      = state->emailText;
+  state->textPtrSz    = sizeof(state->emailText);
 }
 
-static void save_emails(
+static void save_email_domains(
   struct ProcessState *state, const char *text, size_t textSize)
 {
   switch(state->recordType)
@@ -79,14 +79,13 @@ static void save_emails(
       break;
 
     case RECORD_TYPE_ORG:
-      rr_email_extract(state->x.org.email, sizeof(state->x.org.email),
-        text, textSize);
+      rr_email_domain_extract(state->x.org.emailDomains,
+        sizeof(state->x.org.emailDomains), text, textSize);
       break;
 
     case RECORD_TYPE_NET:
-      rr_email_extract(state->x.inetnum.email,
-        sizeof(state->x.inetnum.email),
-        text, textSize);
+      rr_email_domain_extract(state->x.inetnum.emailDomains,
+        sizeof(state->x.inetnum.emailDomains), text, textSize);
       break;
   }
 }
@@ -305,7 +304,7 @@ static void xml_on_end(void *userData, const char *name)
 
   if (state->inEmail && strcmp(name, "email") == 0)
   {
-    save_emails(state, state->emailValue, strlen(state->emailValue));
+    save_email_domains(state, state->emailText, strlen(state->emailText));
     state->inEmail = false;
   }
 
@@ -381,7 +380,7 @@ static void xml_on_end(void *userData, const char *name)
 
     case 3:
       if (state->inComment && strcmp(name, "comment") == 0)
-        save_emails(state, state->commentPtr, state->commentPtrOff);
+        save_email_domains(state, state->commentPtr, state->commentPtrOff);
 
       switch(state->recordType)
       {

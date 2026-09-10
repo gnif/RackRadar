@@ -42,6 +42,8 @@ lists:
   {
     include: [];
     exclude: [];
+
+    # Email filters match normalized domain names only, without an '@'.
     ip_netname:
     {
       match : [ "OVH-%", "OVH_%" ];

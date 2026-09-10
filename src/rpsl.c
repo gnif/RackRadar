@@ -85,25 +85,25 @@ static void rr_rpsl_copy_field(char *dst, size_t dstSz, const char *src)
   dst[len] = '\0';
 }
 
-static void rr_rpsl_extract_emails(
+static void rr_rpsl_extract_email_domains(
   struct ProcessState *state, const char *line, size_t len)
 {
-  const char *value    = line;
-  size_t      valueLen = len;
-  char       *email;
-  size_t      emailSize;
+  const char *value            = line;
+  size_t      valueLen         = len;
+  char       *emailDomains;
+  size_t      emailDomainsSize;
 
   switch(state->recordType)
   {
     case RECORD_TYPE_ORG:
-      email     = state->x.org.email;
-      emailSize = sizeof(state->x.org.email);
+      emailDomains     = state->x.org.emailDomains;
+      emailDomainsSize = sizeof(state->x.org.emailDomains);
       break;
 
     case RECORD_TYPE_INETNUM:
     case RECORD_TYPE_INET6NUM:
-      email     = state->x.inetnum.email;
-      emailSize = sizeof(state->x.inetnum.email);
+      emailDomains     = state->x.inetnum.emailDomains;
+      emailDomainsSize = sizeof(state->x.inetnum.emailDomains);
       break;
 
     case RECORD_TYPE_IGNORE:
@@ -125,7 +125,8 @@ static void rr_rpsl_extract_emails(
     valueLen = len - (size_t)(value - line);
   }
 
-  rr_email_extract(email, emailSize, value, valueLen);
+  rr_email_domain_extract(
+    emailDomains, emailDomainsSize, value, valueLen);
 }
 
 static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
@@ -202,7 +203,7 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
   }
 
   if (state->inRecord)
-    rr_rpsl_extract_emails(state, line, len);
+    rr_rpsl_extract_email_domains(state, line, len);
 
   // if new record
   if (!state->inRecord)

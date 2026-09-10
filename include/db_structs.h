@@ -34,12 +34,13 @@ RRDBRegistrar;
 
 typedef struct RRDBOrg
 {
-  unsigned registrar_id;
-  unsigned serial;
-  char     handle[32];
-  char     name  [1024];
-  char     descr [8192];
-  char     email [8192];
+  unsigned           registrar_id;
+  unsigned           serial;
+  unsigned long long emailRecordId;
+  char               handle      [32];
+  char               name        [1024];
+  char               descr       [8192];
+  char               emailDomains[8192];
 }
 RRDBOrg;
 
@@ -52,15 +53,16 @@ RRDBAddr;
 
 typedef struct RRDBNetBlock
 {
-  unsigned registrar_id;
-  unsigned serial;
-  char     org_handle[33];
-  RRDBAddr startAddr;
-  RRDBAddr endAddr;
-  uint8_t  prefixLen;
-  char     netname[256 ];
-  char     descr  [8192];
-  char     email  [8192];
+  unsigned           registrar_id;
+  unsigned           serial;
+  unsigned long long emailRecordId;
+  char               org_handle  [33];
+  RRDBAddr           startAddr;
+  RRDBAddr           endAddr;
+  uint8_t            prefixLen;
+  char               netname     [256 ];
+  char               descr       [8192];
+  char               emailDomains[8192];
 }
 RRDBNetBlock;
 

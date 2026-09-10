@@ -182,8 +182,8 @@ static bool rr_email_is_valid(const char *email, size_t at, size_t len)
   return sawDot;
 }
 
-static bool rr_email_list_contains(
-  const char *list, size_t listLen, const char *email, size_t emailLen)
+static bool rr_email_domain_list_contains(
+  const char *list, size_t listLen, const char *domain, size_t domainLen)
 {
   size_t lineStart = 0;
   for(size_t i = 0; i <= listLen; ++i)
@@ -192,8 +192,8 @@ static bool rr_email_list_contains(
       continue;
 
     const size_t lineLen = i - lineStart;
-    if (lineLen == emailLen &&
-        strncasecmp(list + lineStart, email, emailLen) == 0)
+    if (lineLen == domainLen &&
+        strncasecmp(list + lineStart, domain, domainLen) == 0)
       return true;
 
     lineStart = i + 1;
@@ -202,31 +202,35 @@ static bool rr_email_list_contains(
   return false;
 }
 
-static void rr_email_list_append(
-  char *dst, size_t dstSize, const char *email, size_t emailLen)
+static void rr_email_domain_list_append(
+  char *dst, size_t dstSize, const char *domain, size_t domainLen)
 {
-  if (!dst || dstSize == 0)
+  if (!dst || dstSize == 0 || !domain || domainLen == 0 || domainLen > 253)
     return;
 
   const size_t dstLen = strnlen(dst, dstSize);
   if (dstLen == dstSize ||
-      rr_email_list_contains(dst, dstLen, email, emailLen))
+      rr_email_domain_list_contains(dst, dstLen, domain, domainLen))
     return;
 
   const size_t separator = dstLen > 0 ? 1 : 0;
   const size_t available = dstSize - dstLen;
-  if (separator + emailLen + 1 > available)
+  if (separator + domainLen + 1 > available)
     return;
 
   size_t pos = dstLen;
   if (separator)
     dst[pos++] = '\n';
 
-  memcpy(dst + pos, email, emailLen);
-  dst[pos + emailLen] = '\0';
+  for(size_t i = 0; i < domainLen; ++i)
+  {
+    const char c = domain[i];
+    dst[pos + i] = c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+  }
+  dst[pos + domainLen] = '\0';
 }
 
-void rr_email_extract(
+void rr_email_domain_extract(
   char *dst, size_t dstSize, const char *text, size_t textSize)
 {
   if (!dst || dstSize == 0 || !text)
@@ -254,7 +258,9 @@ void rr_email_extract(
         !rr_email_is_valid(text + start, at - start, end - start))
       continue;
 
-    rr_email_list_append(dst, dstSize, text + start, end - start);
+    const size_t domainStart = at + 1;
+    rr_email_domain_list_append(
+      dst, dstSize, text + domainStart, end - domainStart);
   }
 }
 
