@@ -912,7 +912,7 @@ static bool db_deinit_fn(RRDBCon *con, void **udata)
 {
   STMT_FREE(STATEMENTS, *udata);
 
-  for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list; ++list)
+  for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list && list->cl; ++list)
   {
     for(int n = 0; n < ARRAY_SIZE(list->stmt); ++n)
       rr_db_stmt_free(&list->stmt[n]);

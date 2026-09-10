@@ -53,6 +53,9 @@ bool rr_db_commit  (RRDBCon *con);
 bool rr_db_rollback(RRDBCon *con);
 
 RRDBStmt          *rr_db_stmt_prepare  (RRDBCon *con, const char *sql, ...);
+RRDBStmt          *rr_db_stmt_preparev (RRDBCon *con, const char *sql,
+  const RRDBParam *in_params, size_t in_count,
+  const RRDBParam *out_params, size_t out_count);
 bool               rr_db_stmt_execute  (RRDBStmt *stmt, unsigned long long *affectedRows);
 unsigned long long rr_db_stmt_insert_id(RRDBStmt *stmt);
 int                rr_db_stmt_fetch_one(RRDBStmt *stmt);

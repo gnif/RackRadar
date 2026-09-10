@@ -335,10 +335,14 @@ void rr_db_release(RRDBCon **con)
     return;
 
   pthread_mutex_lock(&db.pool_lock);
-  (*con)->is_reserved   = false;
-  (*con)->udataInitFn   = NULL;
-  (*con)->udataDeInitFn = NULL;
-  (*con)->ludata        = NULL;
+  RRDBCon *release = *con;
+  if (release->udataDeInitFn && !release->udataDeInitFn(release, &release->ludata))
+    LOG_ERROR("connection udataDeInitFn returned false");
+
+  release->is_reserved   = false;
+  release->udataInitFn   = NULL;
+  release->udataDeInitFn = NULL;
+  release->ludata        = NULL;
   pthread_mutex_unlock(&db.pool_lock);
   *con = NULL;
 }
@@ -427,8 +431,20 @@ bool rr_db_rollback(RRDBCon *con)
   return true;
 }
 
-RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
+RRDBStmt *rr_db_stmt_preparev(
+  RRDBCon         *con,
+  const char      *sql,
+  const RRDBParam *in_params,
+  size_t           in_count,
+  const RRDBParam *out_params,
+  size_t           out_count)
 {
+  if ((in_count > 0 && !in_params) || (out_count > 0 && !out_params))
+  {
+    LOG_ERROR("invalid prepared statement parameters");
+    return NULL;
+  }
+
   MYSQL_STMT *stmt = mysql_stmt_init(&con->con);
   if (!stmt)
   {
@@ -445,44 +461,29 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
     return NULL;
   }
 
-  va_list ap;
-  va_start(ap, sql);
-  size_t in_params  = 0;
-  size_t out_params = 0;
-  bool   in         = true;
-  for (;;)
+  unsigned long param_count = mysql_stmt_param_count(stmt);
+  if (param_count != in_count)
   {
-    RRDBParam *param = va_arg(ap, RRDBParam *);
-    if (param == RRDB_PARAM_OUT)
-    {
-      in = false;
-      continue;
-    }
-
-    if (param == NULL)
-      break;
-
-    if (in)
-      ++in_params;
-    else
-      ++out_params;
+    LOG_ERROR("prepared statement parameter count mismatch: expected %zu, got %lu",
+      in_count, param_count);
+    mysql_stmt_close(stmt);
+    return NULL;
   }
-  va_end(ap);
-
 
   #define RRDB_FIELDS(T, X, ...) \
-    X(T, types   , in_params , __VA_ARGS__); \
-    X(T, bind    , in_params , __VA_ARGS__); \
-    X(T, lengths , in_params , __VA_ARGS__); \
-    X(T, is_null , in_params , __VA_ARGS__); \
-    X(T, rtypes  , out_params, __VA_ARGS__); \
-    X(T, rbind   , out_params, __VA_ARGS__); \
-    X(T, rlengths, out_params, __VA_ARGS__); \
-    X(T, ris_null, out_params, __VA_ARGS__);
+    X(T, types   , in_count , __VA_ARGS__); \
+    X(T, bind    , in_count , __VA_ARGS__); \
+    X(T, lengths , in_count , __VA_ARGS__); \
+    X(T, is_null , in_count , __VA_ARGS__); \
+    X(T, rtypes  , out_count, __VA_ARGS__); \
+    X(T, rbind   , out_count, __VA_ARGS__); \
+    X(T, rlengths, out_count, __VA_ARGS__); \
+    X(T, ris_null, out_count, __VA_ARGS__);
 
   RRDBStmt *rs = NULL;
   RR_ARENA_ALLOC_INIT(RRDBStmt, RRDB_FIELDS, rs);
-  if (!rs) {
+  if (!rs)
+  {
     LOG_ERROR("out of memory");
     mysql_stmt_close(stmt);
     return NULL;
@@ -490,13 +491,12 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
 
   rs->con        = con;
   rs->stmt       = stmt;
-  rs->in_params  = in_params;
-  rs->out_params = out_params;
+  rs->in_params  = in_count;
+  rs->out_params = out_count;
 
-  va_start(ap, sql);
-  for (size_t i = 0; i < in_params; i++)
+  for (size_t i = 0; i < in_count; i++)
   {
-    RRDBParam *param = va_arg(ap, RRDBParam *);
+    const RRDBParam *param = &in_params[i];
 
     rs->types[i]              = param->type;
     rs->bind[i].buffer_type   = rr_db_type_to_mysql_type(param->type);
@@ -532,12 +532,9 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
     }
   }
 
-  // NULL or RRDB_PARAM_OUT
-  (void)va_arg(ap, void *);
-
-  for(size_t i = 0; i < out_params; ++i)
+  for(size_t i = 0; i < out_count; ++i)
   {
-    RRDBParam *param = va_arg(ap, RRDBParam *);
+    const RRDBParam *param = &out_params[i];
 
     if (rr_db_type_is_stringish(param->type) && param->size == 0)
     {
@@ -564,12 +561,6 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
       rs->rbind[i].buffer_length = 0;
   }
 
-  // NULL
-  if (out_params > 0)
-    (void)va_arg(ap, void *);
-
-  va_end(ap);
-
   if (rs->in_params > 0 && mysql_stmt_bind_param(stmt, rs->bind) != 0)
   {
     LOG_ERROR("mysql_stmt_bind_param failed: %s", mysql_stmt_error(stmt));
@@ -583,10 +574,80 @@ RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
     LOG_ERROR("mysql_stmt_bind_result failed: %s", mysql_stmt_error(stmt));
     mysql_stmt_close(stmt);
     free(rs);
-    return false;
+    return NULL;
   }
 
   return rs;
+}
+
+RRDBStmt *rr_db_stmt_prepare(RRDBCon *con, const char *sql, ...)
+{
+  va_list ap;
+  va_start(ap, sql);
+  size_t in_count  = 0;
+  size_t out_count = 0;
+  bool   in        = true;
+  for (;;)
+  {
+    RRDBParam *param = va_arg(ap, RRDBParam *);
+    if (param == RRDB_PARAM_OUT)
+    {
+      in = false;
+      continue;
+    }
+
+    if (param == NULL)
+      break;
+
+    if (in)
+      ++in_count;
+    else
+      ++out_count;
+  }
+  va_end(ap);
+
+  size_t     param_count = in_count + out_count;
+  RRDBParam *params      = NULL;
+  if (param_count > 0)
+  {
+    params = calloc(param_count, sizeof(*params));
+    if (!params)
+    {
+      LOG_ERROR("out of memory");
+      return NULL;
+    }
+  }
+
+  RRDBParam *in_params  = params;
+  RRDBParam *out_params = params ? params + in_count : NULL;
+  size_t     in_index   = 0;
+  size_t     out_index  = 0;
+  in                    = true;
+
+  va_start(ap, sql);
+  for (;;)
+  {
+    RRDBParam *param = va_arg(ap, RRDBParam *);
+    if (param == RRDB_PARAM_OUT)
+    {
+      in = false;
+      continue;
+    }
+
+    if (param == NULL)
+      break;
+
+    if (in)
+      in_params[in_index++] = *param;
+    else
+      out_params[out_index++] = *param;
+  }
+  va_end(ap);
+
+  RRDBStmt *stmt = rr_db_stmt_preparev(con, sql,
+    in_params, in_count, out_params, out_count);
+  free(params);
+  return stmt;
 }
 
 bool rr_db_stmt_execute(RRDBStmt *stmt, unsigned long long *affectedRows)
@@ -607,7 +668,7 @@ bool rr_db_stmt_execute(RRDBStmt *stmt, unsigned long long *affectedRows)
   }
 
   if (affectedRows)
-    *affectedRows = mysql_affected_rows(&stmt->con->con);
+    *affectedRows = mysql_stmt_affected_rows(stmt->stmt);
 
   return true;
 }
@@ -670,7 +731,7 @@ void rr_db_stmt_free(RRDBStmt **rs)
   if (!rs || !*rs)
     return;
 
-  if ((*rs)->stmt && !mysql_stmt_close((*rs)->stmt))
+  if ((*rs)->stmt && mysql_stmt_close((*rs)->stmt) != 0)
     (*rs)->con->is_faulty = rr_mysql_needs_reconnect(mysql_errno(&(*rs)->con->con));
 
   free(*rs);
