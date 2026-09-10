@@ -44,7 +44,10 @@ typedef struct RRImport
     unsigned in_serial;
   );
 
-  STMT_STRUCT(netblockv4_link_org,);
+  STMT_STRUCT(netblockv4_link_org,
+    unsigned in_registrar_id;
+    unsigned in_serial;
+  );
 
   STMT_STRUCT(netblockv6_insert,
     RRDBNetBlock in;
@@ -55,7 +58,10 @@ typedef struct RRImport
     unsigned in_serial;
   );
 
-  STMT_STRUCT(netblockv6_link_org,);
+  STMT_STRUCT(netblockv6_link_org,
+    unsigned in_registrar_id;
+    unsigned in_serial;
+  );
 
   STMT_STRUCT(netblockv4_union_truncate,);
   STMT_STRUCT(netblockv6_union_truncate,);
@@ -205,7 +211,14 @@ DEFAULT_STMT(RRImport, netblockv4_link_org,
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "
     "AND o.handle = nb.org_handle "
-    "SET nb.org_id = o.id"
+    "AND o.serial = ? "
+    "SET nb.org_id = o.id "
+    "WHERE nb.registrar_id = ? "
+    "AND nb.serial = ? "
+    "AND NOT (nb.org_id <=> o.id)",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_insert,
@@ -253,7 +266,14 @@ DEFAULT_STMT(RRImport, netblockv6_link_org,
     "LEFT JOIN org o "
     "ON o.registrar_id = nb.registrar_id "
     "AND o.handle = nb.org_handle "
-    "SET nb.org_id = o.id"
+    "AND o.serial = ? "
+    "SET nb.org_id = o.id "
+    "WHERE nb.registrar_id = ? "
+    "AND nb.serial = ? "
+    "AND NOT (nb.org_id <=> o.id)",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
 );
 
 DEFAULT_STMT(RRImport, netblockv4_union_truncate,
@@ -458,8 +478,10 @@ static bool rr_import_netblockv4_delete_old(unsigned in_registrar_id, unsigned i
   return rr_db_stmt_execute(s_import.netblockv4_delete_old.stmt, &s_import.stats.deletedIPv4);
 }
 
-static bool rr_import_netblockv4_link_org(void)
+static bool rr_import_netblockv4_link_org(unsigned in_registrar_id, unsigned in_serial)
 {
+  s_import.netblockv4_link_org.in_registrar_id = in_registrar_id;
+  s_import.netblockv4_link_org.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv4_link_org.stmt, NULL);
 }
 
@@ -508,8 +530,10 @@ static bool rr_import_netblockv6_delete_old(unsigned in_registrar_id, unsigned i
   return rr_db_stmt_execute(s_import.netblockv6_delete_old.stmt, &s_import.stats.deletedIPv6);
 }
 
-static bool rr_import_netblockv6_link_org(void)
+static bool rr_import_netblockv6_link_org(unsigned in_registrar_id, unsigned in_serial)
 {
+  s_import.netblockv6_link_org.in_registrar_id = in_registrar_id;
+  s_import.netblockv6_link_org.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, NULL);
 }
 
@@ -1572,11 +1596,11 @@ bool rr_import_run(void)
         //finalize the registrar
         LOG_INFO("finalizing");
         if (
-          !rr_import_org_delete_old         (registrar_id, serial) ||
+          (linkOrgs && !rr_import_netblockv4_link_org(registrar_id, serial)) ||
+          (linkOrgs && !rr_import_netblockv6_link_org(registrar_id, serial)) ||
           !rr_import_netblockv4_delete_old  (registrar_id, serial) ||
           !rr_import_netblockv6_delete_old  (registrar_id, serial) ||
-          (linkOrgs && !rr_import_netblockv4_link_org()) ||
-          (linkOrgs && !rr_import_netblockv6_link_org()) ||
+          !rr_import_org_delete_old         (registrar_id, serial) ||
           !rr_import_registrar_update_serial(registrar_id, serial) ||
           !rr_db_commit                     (con))
         {
