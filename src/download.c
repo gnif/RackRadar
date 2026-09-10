@@ -81,8 +81,14 @@ static bool rr_download_add_validator(struct curl_slist **headers,
 
   const size_t nameLen  = strlen(name);
   const size_t valueLen = strnlen(value, valueSize);
-  if (valueLen == valueSize || memchr(value, '\r', valueLen) ||
-      memchr(value, '\n', valueLen))
+  bool         valid    = valueLen != valueSize;
+  for (size_t i = 0; valid && i < valueLen; ++i)
+  {
+    const unsigned char byte = (unsigned char)value[i];
+    valid = byte >= 0x20 && byte <= 0x7e;
+  }
+
+  if (!valid)
   {
     LOG_ERROR("Invalid %s validator", name);
     return false;
@@ -134,7 +140,22 @@ static bool rr_download_copy_header(const char *buffer, size_t length,
 
   size_t copyLen = (size_t)(end - start);
   if (copyLen >= dstSize)
-    copyLen = dstSize - 1;
+  {
+    LOG_WARN("Ignoring oversized %s response header", name);
+    dst[0] = '\0';
+    return true;
+  }
+
+  for (size_t i = 0; i < copyLen; ++i)
+  {
+    const unsigned char byte = (unsigned char)start[i];
+    if (byte < 0x20 || byte > 0x7e)
+    {
+      LOG_WARN("Ignoring non-ASCII %s response header", name);
+      dst[0] = '\0';
+      return true;
+    }
+  }
 
   memcpy(dst, start, copyLen);
   dst[copyLen] = '\0';
@@ -229,7 +250,7 @@ static RRDownloadResult rr_download(RRDownload *h, const char *url, FILE *fp,
 
   if (httpCode == 304)
     result = RR_DOWNLOAD_RESULT_NOT_MODIFIED;
-  else if (httpCode >= 400)
+  else if (httpCode >= 300)
     LOG_ERROR("Unexpected response: %ld", httpCode);
   else
     result = RR_DOWNLOAD_RESULT_DOWNLOADED;

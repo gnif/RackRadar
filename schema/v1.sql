@@ -1,9 +1,14 @@
 CREATE TABLE IF NOT EXISTS registrar
 (
-  id          INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  name        VARCHAR(32)  NOT NULL,
-  serial      INT UNSIGNED NOT NULL DEFAULT 0,
-  last_import INT UNSIGNED NOT NULL,
+  id                   INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  name                 VARCHAR(32)   NOT NULL,
+  serial               INT UNSIGNED  NOT NULL DEFAULT 0,
+  last_import          INT UNSIGNED  NOT NULL,
+  last_check           INT UNSIGNED  NOT NULL DEFAULT 0,
+  source_config_hash   CHAR(64)      CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  source_content_hash  CHAR(64)      CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  source_etag          VARCHAR(1024) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  source_last_modified VARCHAR(128)  CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
 
   PRIMARY KEY(id),
 

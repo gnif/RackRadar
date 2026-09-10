@@ -6,12 +6,33 @@
 #include "db.h"
 #include "query.h"
 #include "query_macros.h"
+#include "sha256.h"
 
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
 
 #define RR_IMPORT_BATCH_ROWS 64
+#define RR_IMPORT_PARSER_VERSION "RackRadar-source-parser-v1"
+
+typedef struct RRImportSourceState
+{
+  char               configHash [RR_SHA256_HEX_SIZE];
+  char               contentHash[RR_SHA256_HEX_SIZE];
+  RRDownloadMetadata download;
+}
+RRImportSourceState;
+
+typedef struct RRImportRegistrar
+{
+  unsigned            id;
+  unsigned            serial;
+  unsigned            lastImport;
+  unsigned            lastCheck;
+  unsigned            databaseTime;
+  RRImportSourceState source;
+}
+RRImportRegistrar;
 
 typedef struct RRImportBatch
 {
@@ -53,8 +74,19 @@ typedef struct RRImport
   );
 
   STMT_STRUCT(registrar_update_serial,
-    unsigned in_registrar_id;
-    unsigned in_serial;
+    unsigned            in_registrar_id;
+    unsigned            in_serial;
+    RRImportSourceState in_source;
+  );
+
+  STMT_STRUCT(registrar_get,
+    char              in_name[32];
+    RRImportRegistrar out;
+  );
+
+  STMT_STRUCT(registrar_update_check,
+    unsigned            in_registrar_id;
+    RRImportSourceState in_source;
   );
 
   STMT_STRUCT(registrar_lock,
@@ -62,6 +94,7 @@ typedef struct RRImport
     unsigned out_registrar_id;
     unsigned out_serial;
     unsigned out_last_import;
+    unsigned out_last_check;
   );
 
   STMT_STRUCT(import_lock_acquire,
@@ -189,6 +222,8 @@ RRImport s_import = { 0 };
 #define STATEMENTS(X) \
   X(registrar_insert              ) \
   X(registrar_update_serial       ) \
+  X(registrar_get                 ) \
+  X(registrar_update_check        ) \
   X(registrar_lock                ) \
   X(import_lock_acquire           ) \
   X(import_lock_release           ) \
@@ -235,18 +270,86 @@ DEFAULT_STMT(RRImport, registrar_insert,
 );
 
 DEFAULT_STMT(RRImport, registrar_update_serial,
-  "UPDATE registrar SET serial = ?, last_import = UNIX_TIMESTAMP() WHERE id = ?",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+  "UPDATE registrar SET "
+    "serial = ?, "
+    "last_import = UNIX_TIMESTAMP(), "
+    "last_check = UNIX_TIMESTAMP(), "
+    "source_config_hash = ?, "
+    "source_content_hash = ?, "
+    "source_etag = ?, "
+    "source_last_modified = ? "
+  "WHERE id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_serial                      },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.contentHash          },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.etag         },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.lastModified },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_registrar_id                }
+);
+
+DEFAULT_STMT(RRImport, registrar_get,
+  "SELECT "
+    "id, serial, last_import, last_check, "
+    "source_config_hash, source_content_hash, source_etag, "
+    "source_last_modified, UNIX_TIMESTAMP() "
+  "FROM registrar WHERE name = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.id                                           },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.serial                                       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.lastImport                                   },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.lastCheck                                    },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out.source.configHash,
+    .size = sizeof(this->out.source.configHash)
+  },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out.source.contentHash,
+    .size = sizeof(this->out.source.contentHash)
+  },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out.source.download.etag,
+    .size = sizeof(this->out.source.download.etag)
+  },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out.source.download.lastModified,
+    .size = sizeof(this->out.source.download.lastModified)
+  },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out.databaseTime }
+);
+
+DEFAULT_STMT(RRImport, registrar_update_check,
+  "UPDATE registrar SET "
+    "last_check = UNIX_TIMESTAMP(), "
+    "source_config_hash = ?, "
+    "source_content_hash = ?, "
+    "source_etag = ?, "
+    "source_last_modified = ? "
+  "WHERE id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.contentHash          },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.etag         },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.lastModified },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_registrar_id                }
 );
 
 DEFAULT_STMT(RRImport, registrar_lock,
-  "SELECT id, serial, last_import FROM registrar WHERE name = ? FOR UPDATE",
+  "SELECT id, serial, last_import, last_check "
+  "FROM registrar WHERE name = ? FOR UPDATE",
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
   RRDB_PARAM_OUT,
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_last_import  }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_last_import  },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_last_check   }
 );
 
 DEFAULT_STMT(RRImport, import_lock_acquire,
@@ -646,7 +749,8 @@ DEFAULT_STMT(RRImport, netblockv6_list_union_insert,
 
 static int rr_import_registrar_insert(const char *in_name, unsigned *out_registrar_id)
 {
-  strcpy(s_import.registrar_insert.in_name, in_name);
+  snprintf(s_import.registrar_insert.in_name,
+    sizeof(s_import.registrar_insert.in_name), "%s", in_name);
   int rc = rr_db_stmt_execute(s_import.registrar_insert.stmt, NULL);
   if (rc < 1)
   {
@@ -663,20 +767,48 @@ static int rr_import_registrar_insert(const char *in_name, unsigned *out_registr
   return 1;
 }
 
-static bool rr_import_registrar_update_serial(unsigned in_registrar_id, unsigned in_serial)
+static bool rr_import_registrar_update_serial(
+  unsigned                   in_registrar_id,
+  unsigned                   in_serial,
+  const RRImportSourceState *in_source)
 {
   s_import.registrar_update_serial.in_registrar_id = in_registrar_id;
   s_import.registrar_update_serial.in_serial       = in_serial;
+  s_import.registrar_update_serial.in_source       = *in_source;
   return rr_db_stmt_execute(s_import.registrar_update_serial.stmt, NULL);
+}
+
+static int rr_import_registrar_get(
+  const char        *in_name,
+  RRImportRegistrar *out_registrar)
+{
+  snprintf(s_import.registrar_get.in_name,
+    sizeof(s_import.registrar_get.in_name), "%s", in_name);
+
+  int rc = rr_db_stmt_fetch_one(s_import.registrar_get.stmt);
+  if (rc == 1)
+    *out_registrar = s_import.registrar_get.out;
+  return rc;
+}
+
+static bool rr_import_registrar_update_check(
+  unsigned                   in_registrar_id,
+  const RRImportSourceState *in_source)
+{
+  s_import.registrar_update_check.in_registrar_id = in_registrar_id;
+  s_import.registrar_update_check.in_source       = *in_source;
+  return rr_db_stmt_execute(s_import.registrar_update_check.stmt, NULL);
 }
 
 static int rr_import_registrar_lock(
   const char *in_name,
   unsigned   *out_registrar_id,
   unsigned   *out_serial,
-  unsigned   *out_last_import)
+  unsigned   *out_last_import,
+  unsigned   *out_last_check)
 {
-  strcpy(s_import.registrar_lock.in_name, in_name);
+  snprintf(s_import.registrar_lock.in_name,
+    sizeof(s_import.registrar_lock.in_name), "%s", in_name);
   int rc = rr_db_stmt_fetch_one(s_import.registrar_lock.stmt);
   if (rc != 1)
     return rc;
@@ -684,6 +816,7 @@ static int rr_import_registrar_lock(
   *out_registrar_id = s_import.registrar_lock.out_registrar_id;
   *out_serial       = s_import.registrar_lock.out_serial;
   *out_last_import  = s_import.registrar_lock.out_last_import;
+  *out_last_check   = s_import.registrar_lock.out_last_check;
   return 1;
 }
 
@@ -2076,6 +2209,128 @@ bool rr_import_build_lists(void)
   return result;
 }
 
+static void rr_import_hash_config_value(RRSHA256 *ctx, const char *value)
+{
+  const char *safe = value ? value : "";
+  rr_sha256_update(ctx, safe, strlen(safe) + 1);
+}
+
+static void rr_import_source_config_hash(
+  const typeof(*g_config.sources) *source,
+  char out_hash[RR_SHA256_HEX_SIZE])
+{
+  RRSHA256 ctx;
+  uint8_t  digest[RR_SHA256_DIGEST_SIZE];
+  uint8_t  type = (uint8_t)source->type;
+
+  rr_sha256_init(&ctx);
+  rr_sha256_update(&ctx, RR_IMPORT_PARSER_VERSION,
+    sizeof(RR_IMPORT_PARSER_VERSION));
+  rr_sha256_update(&ctx, &type, sizeof(type));
+  rr_import_hash_config_value(&ctx, source->name    );
+  rr_import_hash_config_value(&ctx, source->url     );
+  rr_import_hash_config_value(&ctx, source->user    );
+  rr_import_hash_config_value(&ctx, source->extra_v4);
+  rr_import_hash_config_value(&ctx, source->extra_v6);
+  rr_sha256_final(&ctx, digest);
+  rr_sha256_hex(digest, out_hash);
+}
+
+static bool rr_import_source_content_hash(
+  FILE *fp,
+  char  out_hash[RR_SHA256_HEX_SIZE])
+{
+  uint8_t digest[RR_SHA256_DIGEST_SIZE];
+  int     error;
+
+  if (!rr_sha256_file(fp, true, digest, &error))
+  {
+    LOG_ERROR("failed to hash downloaded source: %s", strerror(error));
+    return false;
+  }
+
+  rr_sha256_hex(digest, out_hash);
+  return true;
+}
+
+static bool rr_import_source_due(
+  unsigned last_check,
+  unsigned database_time,
+  int      frequency)
+{
+  if (last_check == 0 || frequency <= 0)
+    return true;
+
+  if (database_time < last_check)
+    return true;
+
+  return database_time - last_check >= (unsigned)frequency;
+}
+
+static void rr_import_source_state_set(
+  RRImportSourceState *state,
+  const char *config_hash,
+  const char *content_hash,
+  const RRDownloadMetadata *download)
+{
+  snprintf(state->configHash , sizeof(state->configHash ), "%s", config_hash );
+  snprintf(state->contentHash, sizeof(state->contentHash), "%s", content_hash);
+  state->download = *download;
+}
+
+static void rr_import_source_state_update_validators(
+  RRImportSourceState *state, const RRDownloadMetadata *download)
+{
+  if (download->etag[0])
+    snprintf(state->download.etag, sizeof(state->download.etag),
+      "%s", download->etag);
+
+  if (download->lastModified[0])
+    snprintf(state->download.lastModified,
+      sizeof(state->download.lastModified), "%s", download->lastModified);
+}
+
+static bool rr_import_registrar_update_unchanged(
+  RRDBCon                   *con,
+  const char                *name,
+  const RRImportRegistrar   *expected,
+  const RRImportSourceState *source)
+{
+  if (!rr_db_start(con))
+    return false;
+
+  unsigned  registrar_id;
+  unsigned  serial;
+  unsigned  last_import;
+  unsigned  last_check;
+  const int rc = rr_import_registrar_lock(name,
+    &registrar_id, &serial, &last_import, &last_check);
+
+  if (rc != 1)
+  {
+    LOG_ERROR("failed to lock registrar %s", name);
+    rr_db_rollback(con);
+    return false;
+  }
+
+  if (registrar_id != expected->id ||
+      serial       != expected->serial ||
+      last_import  != expected->lastImport ||
+      last_check   != expected->lastCheck)
+  {
+    LOG_WARN("registrar %s changed while its source was fetched", name);
+    rr_db_rollback(con);
+    return false;
+  }
+
+  if (rr_import_registrar_update_check(registrar_id, source) &&
+      rr_db_commit(con))
+    return true;
+
+  rr_db_rollback(con);
+  return false;
+}
+
 bool rr_import_run(void)
 {
   int rc;
@@ -2109,14 +2364,11 @@ bool rr_import_run(void)
         continue;
 
       memset(&s_import.stats, 0, sizeof(s_import.stats));
-      unsigned registrar_id = 0;
-      unsigned serial       = 0;
-      unsigned last_import  = 0;
+      RRImportRegistrar registrar = { 0 };
+      char              configHash[RR_SHA256_HEX_SIZE];
+      rr_import_source_config_hash(src, configHash);
 
-      rc = rr_query_registrar_by_name(con, src->name,
-        &registrar_id,
-        &serial,
-        &last_import);
+      rc = rr_import_registrar_get(src->name, &registrar);
 
       if (rc < 0)
         goto fail_con;
@@ -2124,7 +2376,7 @@ bool rr_import_run(void)
       if (rc == 0)
       {
         LOG_INFO("Registrar not found, inserting new record...");
-        rc = rr_import_registrar_insert(src->name, &registrar_id);
+        rc = rr_import_registrar_insert(src->name, &registrar.id);
         if (rc < 0)
           goto fail_con;
 
@@ -2136,8 +2388,17 @@ bool rr_import_run(void)
         LOG_INFO("New registrar inserted");
       }
 
-      if (last_import > 0 && time(NULL) - last_import < src->frequency)
+      const bool configMatches =
+        strcmp(configHash, registrar.source.configHash) == 0;
+      if (configMatches &&
+          !rr_import_source_due(registrar.lastCheck,
+            registrar.databaseTime, src->frequency))
         continue;
+
+      const bool sentValidators = configMatches &&
+        registrar.source.contentHash[0] &&
+        (registrar.source.download.etag[0] ||
+         registrar.source.download.lastModified[0]);
 
       LOG_INFO("Fetching source: %s", src->name);
       if (src->user && src->pass)
@@ -2145,14 +2406,68 @@ bool rr_import_run(void)
       else
         rr_download_clear_auth(s_import.dl);
 
-      FILE *fp;
-      if (!rr_download_to_tmpfile(s_import.dl, src->url, &fp))
+      FILE               *fp = NULL;
+      RRDownloadMetadata  response = { 0 };
+      RRDownloadResult    downloadResult =
+        rr_download_to_tmpfile_conditional(
+          s_import.dl,
+          src->url,
+          sentValidators ? &registrar.source.download : NULL,
+          &fp,
+          &response);
+
+      if (downloadResult == RR_DOWNLOAD_RESULT_ERROR)
       {
         LOG_ERROR("failed fetch for %s", src->name);
         continue;
       }
 
-      if (fseek(fp, 0, SEEK_SET) != 0)
+      if (downloadResult == RR_DOWNLOAD_RESULT_NOT_MODIFIED)
+      {
+        if (!sentValidators)
+        {
+          LOG_ERROR("source %s returned 304 without a conditional request",
+            src->name);
+          continue;
+        }
+
+        RRImportSourceState checked = registrar.source;
+        rr_import_source_state_update_validators(&checked, &response);
+        if (!rr_import_registrar_update_unchanged(
+          con, src->name, &registrar, &checked))
+          goto fail_con;
+
+        LOG_INFO("source %s is unchanged (HTTP 304)", src->name);
+        continue;
+      }
+
+      char contentHash[RR_SHA256_HEX_SIZE];
+      if (!rr_import_source_content_hash(fp, contentHash))
+      {
+        fclose(fp);
+        continue;
+      }
+
+      if (configMatches &&
+          strcmp(contentHash, registrar.source.contentHash) == 0)
+      {
+        RRImportSourceState checked;
+        rr_import_source_state_set(&checked, configHash, contentHash, &response);
+        fclose(fp);
+
+        if (!rr_import_registrar_update_unchanged(
+          con, src->name, &registrar, &checked))
+          goto fail_con;
+
+        LOG_INFO("source %s content is unchanged", src->name);
+        continue;
+      }
+
+      RRImportSourceState sourceState;
+      rr_import_source_state_set(&sourceState,
+        configHash, contentHash, &response);
+
+      if (fseeko(fp, 0, SEEK_SET) != 0)
       {
         LOG_ERROR("fseek 0 failed");
         fclose(fp);
@@ -2170,8 +2485,9 @@ bool rr_import_run(void)
       LOG_INFO("start import %s", src->name);
       uint64_t startTime = rr_microtime();
 
-      ++serial;
-      bool success = false;
+      unsigned registrar_id = registrar.id;
+      unsigned serial       = registrar.serial + 1;
+      bool     success      = false;
       switch(src->type)
       {
         case SOURCE_TYPE_RPSL:
@@ -2209,10 +2525,12 @@ bool rr_import_run(void)
         unsigned locked_registrar_id;
         unsigned locked_serial;
         unsigned locked_last_import;
+        unsigned locked_last_check;
         rc = rr_import_registrar_lock(src->name,
           &locked_registrar_id,
           &locked_serial,
-          &locked_last_import);
+          &locked_last_import,
+          &locked_last_check);
 
         if (rc != 1)
         {
@@ -2226,7 +2544,8 @@ bool rr_import_run(void)
 
         if (locked_registrar_id != registrar_id ||
             locked_serial       != serial - 1 ||
-            locked_last_import  != last_import)
+            locked_last_import  != registrar.lastImport ||
+            locked_last_check   != registrar.lastCheck)
         {
           LOG_WARN("registrar %s changed while its source was being staged", src->name);
           if (!rr_db_rollback(con))
@@ -2251,7 +2570,8 @@ bool rr_import_run(void)
           !rr_import_netblockv6_link_org    (registrar_id) ||
           !rr_import_org_delete_old         (registrar_id) ||
           !rr_import_unions_mark_dirty      () ||
-          !rr_import_registrar_update_serial(registrar_id, serial) ||
+          !rr_import_registrar_update_serial(registrar_id, serial,
+            &sourceState) ||
           !rr_db_commit                     (con))
         {
           LOG_ERROR("failed to finalize");
