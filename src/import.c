@@ -3150,9 +3150,15 @@ log_result:
     if (rebuild_lists && rr_import_build_lists_internal(con))
       rebuild_lists = false;
 
-    fail_con:
     rr_db_put(&con);
-    fail:
+    usleep(1000000);
+    continue;
+
+fail_con:
+    rr_db_put(&con);
+fail:
+    check_unions   = true;
+    rebuild_lists  = true;
     usleep(1000000);
   }
 
