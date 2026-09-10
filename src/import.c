@@ -33,6 +33,7 @@ typedef struct RRImportRegistrar
   unsigned            lastImport;
   unsigned            lastCheck;
   unsigned            databaseTime;
+  char                checkConfigHash[RR_SHA256_HEX_SIZE];
   RRImportSourceState source;
 }
 RRImportRegistrar;
@@ -145,6 +146,11 @@ typedef struct RRImport
   STMT_STRUCT(registrar_update_check,
     unsigned            in_registrar_id;
     RRImportSourceState in_source;
+  );
+
+  STMT_STRUCT(registrar_update_attempt,
+    unsigned in_registrar_id;
+    char     in_config_hash[RR_SHA256_HEX_SIZE];
   );
 
   STMT_STRUCT(registrar_lock,
@@ -312,6 +318,7 @@ static void rr_import_log_timing(
   X(registrar_update_serial       ) \
   X(registrar_get                 ) \
   X(registrar_update_check        ) \
+  X(registrar_update_attempt      ) \
   X(registrar_lock                ) \
   X(import_lock_acquire           ) \
   X(import_lock_release           ) \
@@ -365,11 +372,13 @@ DEFAULT_STMT(RRImport, registrar_update_serial,
     "last_import = UNIX_TIMESTAMP(), "
     "last_check = UNIX_TIMESTAMP(), "
     "source_config_hash = ?, "
+    "source_check_config_hash = ?, "
     "source_content_hash = ?, "
     "source_etag = ?, "
     "source_last_modified = ? "
   "WHERE id = ?",
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_serial                      },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.contentHash          },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.etag         },
@@ -380,6 +389,7 @@ DEFAULT_STMT(RRImport, registrar_update_serial,
 DEFAULT_STMT(RRImport, registrar_get,
   "SELECT "
     "id, serial, last_import, last_check, "
+    "source_check_config_hash, "
     "source_config_hash, source_content_hash, source_etag, "
     "source_last_modified, UNIX_TIMESTAMP() "
   "FROM registrar WHERE name = ?",
@@ -389,6 +399,12 @@ DEFAULT_STMT(RRImport, registrar_get,
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.serial                                       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.lastImport                                   },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.lastCheck                                    },
+  &(RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = this->out.checkConfigHash,
+    .size = sizeof(this->out.checkConfigHash)
+  },
   &(RRDBParam)
   {
     .type = RRDB_TYPE_STRING,
@@ -420,15 +436,26 @@ DEFAULT_STMT(RRImport, registrar_update_check,
   "UPDATE registrar SET "
     "last_check = UNIX_TIMESTAMP(), "
     "source_config_hash = ?, "
+    "source_check_config_hash = ?, "
     "source_content_hash = ?, "
     "source_etag = ?, "
     "source_last_modified = ? "
   "WHERE id = ?",
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.configHash           },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.contentHash          },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.etag         },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_source.download.lastModified },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_registrar_id                }
+);
+
+DEFAULT_STMT(RRImport, registrar_update_attempt,
+  "UPDATE registrar SET "
+    "last_check = UNIX_TIMESTAMP(), "
+    "source_check_config_hash = ? "
+  "WHERE id = ?",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->in_config_hash   },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, registrar_lock,
@@ -933,6 +960,16 @@ static bool rr_import_registrar_update_check(
   s_import.registrar_update_check.in_registrar_id = in_registrar_id;
   s_import.registrar_update_check.in_source       = *in_source;
   return rr_db_stmt_execute(s_import.registrar_update_check.stmt, NULL);
+}
+
+static bool rr_import_registrar_update_attempt(
+  unsigned in_registrar_id, const char *in_config_hash)
+{
+  s_import.registrar_update_attempt.in_registrar_id = in_registrar_id;
+  snprintf(s_import.registrar_update_attempt.in_config_hash,
+    sizeof(s_import.registrar_update_attempt.in_config_hash),
+    "%s", in_config_hash);
+  return rr_db_stmt_execute(s_import.registrar_update_attempt.stmt, NULL);
 }
 
 static int rr_import_registrar_lock(
@@ -2870,6 +2907,56 @@ static bool rr_import_registrar_update_unchanged(
   return false;
 }
 
+static bool rr_import_registrar_mark_attempt(
+  RRDBCon                   *con,
+  const char                *name,
+  const RRImportRegistrar   *expected,
+  const char                *config_hash,
+  RRImportRegistrar         *updated)
+{
+  if (!rr_db_start(con))
+    return false;
+
+  unsigned  registrar_id;
+  unsigned  serial;
+  unsigned  last_import;
+  unsigned  last_check;
+  const int rc = rr_import_registrar_lock(name,
+    &registrar_id, &serial, &last_import, &last_check);
+
+  if (rc != 1)
+  {
+    LOG_ERROR("failed to lock registrar %s", name);
+    rr_db_rollback(con);
+    return false;
+  }
+
+  if (registrar_id != expected->id ||
+      serial       != expected->serial ||
+      last_import  != expected->lastImport ||
+      last_check   != expected->lastCheck)
+  {
+    LOG_WARN("registrar %s changed before its source fetch", name);
+    rr_db_rollback(con);
+    return false;
+  }
+
+  if (!rr_import_registrar_update_attempt(registrar_id, config_hash) ||
+      !rr_db_commit(con))
+  {
+    rr_db_rollback(con);
+    return false;
+  }
+
+  if (rr_import_registrar_get(name, updated) != 1)
+  {
+    LOG_ERROR("failed to refresh registrar %s after marking its fetch", name);
+    return false;
+  }
+
+  return true;
+}
+
 bool rr_import_run(void)
 {
   int rc;
@@ -2929,10 +3016,18 @@ bool rr_import_run(void)
 
       const bool configMatches =
         strcmp(configHash, registrar.source.configHash) == 0;
-      if (configMatches &&
+      const bool checkConfigMatches =
+        strcmp(configHash, registrar.checkConfigHash) == 0;
+      if (checkConfigMatches &&
           !rr_import_source_due(registrar.lastCheck,
             registrar.databaseTime, src->frequency))
         continue;
+
+      RRImportRegistrar checkedRegistrar;
+      if (!rr_import_registrar_mark_attempt(con, src->name, &registrar,
+        configHash, &checkedRegistrar))
+        goto fail_con;
+      registrar = checkedRegistrar;
 
       const bool sentValidators = configMatches &&
         registrar.source.contentHash[0] &&
