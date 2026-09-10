@@ -46,7 +46,9 @@ bool rr_json_import_FILE(const char *registrar, FILE *fp,
       if (!entry)
         continue;
 
-      strncpy(buffer, entry, sizeof(buffer));
+      const size_t entryLen = strnlen(entry, sizeof(buffer) - 1);
+      memcpy(buffer, entry, entryLen);
+      buffer[entryLen] = '\0';
       char *savePtr;
       const char *addr = strtok_r(buffer, "/", &savePtr);
       if (!addr)
@@ -90,7 +92,9 @@ bool rr_json_import_FILE(const char *registrar, FILE *fp,
       if (!entry)
         continue;
 
-      strncpy(buffer, entry, sizeof(buffer));
+      const size_t entryLen = strnlen(entry, sizeof(buffer) - 1);
+      memcpy(buffer, entry, entryLen);
+      buffer[entryLen] = '\0';
       char *savePtr;
       const char *addr = strtok_r(buffer, "/", &savePtr);
       if (!addr)

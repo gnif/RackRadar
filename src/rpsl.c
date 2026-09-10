@@ -75,6 +75,16 @@ static bool rr_rpsl_skip_inetnum(struct ProcessState *state)
   return false;
 }
 
+static void rr_rpsl_copy_field(char *dst, size_t dstSz, const char *src)
+{
+  if (dstSz == 0)
+    return;
+
+  const size_t len = strnlen(src, dstSz - 1);
+  memcpy(dst, src, len);
+  dst[len] = '\0';
+}
+
 static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
 {
   if (len == 0)
@@ -185,7 +195,8 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
         return true;
 
       case RECORD_TYPE_ORG:
-        strncpy(state->x.org.handle, value, sizeof(state->x.org.handle));
+        rr_rpsl_copy_field(state->x.org.handle,
+          sizeof(state->x.org.handle), value);
         return true;
 
       case RECORD_TYPE_INETNUM:
@@ -309,14 +320,20 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
     return true;
 
   if (!dstMulti || dst[0] == '\0')
-    strncpy(dst, value, dstSz);
+    rr_rpsl_copy_field(dst, dstSz, value);
   else
   {
-    size_t len = strlen(dst);
-    if (len + 2 < dstSz)
+    const size_t len       = strlen(dst);
+    const size_t remaining = dstSz - len;
+    if (remaining > 2)
     {
-      dst[len] = '\n';
-      strncpy(dst + len + 1, value, dstSz - len + 1);
+      const size_t valueLen = strnlen(value, remaining - 2);
+      if (valueLen > 0)
+      {
+        dst[len]                = '\n';
+        memcpy(dst + len + 1, value, valueLen);
+        dst[len + valueLen + 1] = '\0';
+      }
     }
   }
 
