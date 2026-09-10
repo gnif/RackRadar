@@ -291,7 +291,7 @@ typedef struct RRImport
 }
 RRImport;
 RRImport s_import = { 0 };
-static volatile sig_atomic_t s_import_running;
+static volatile sig_atomic_t s_import_stop_requested;
 
 static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE]);
 
@@ -1116,7 +1116,7 @@ static bool rr_import_batches_flush(void)
 
 bool rr_import_org_insert(RRDBOrg *in_org)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (s_import.batch.org.count >= RR_IMPORT_BATCH_ROWS)
@@ -1162,7 +1162,7 @@ static bool rr_import_org_delete_old(unsigned in_registrar_id)
 
 bool rr_import_netblockv4_insert(RRDBNetBlock *in_netblock)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (s_import.batch.ipv4.count >= RR_IMPORT_BATCH_ROWS)
@@ -1215,7 +1215,7 @@ static bool rr_import_netblockv4_link_org(
 
 bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (s_import.batch.ipv6.count >= RR_IMPORT_BATCH_ROWS)
@@ -1466,7 +1466,7 @@ static bool rr_import_list_union_batches_flush(void)
 
 static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned in_ip, uint8_t in_prefix_len)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (s_import.listUnionBatch.ipv4.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
@@ -1489,7 +1489,7 @@ static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned
 
 static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned __int128 in_ip, uint8_t in_prefix_len)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (s_import.listUnionBatch.ipv6.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
@@ -2067,12 +2067,14 @@ static bool db_deinit_fn(RRDBCon *con, void **udata)
 static bool rr_import_download_cancel(void *opaque)
 {
   (void)opaque;
-  return !s_import_running;
+  return s_import_stop_requested;
 }
 
 bool rr_import_init(void)
 {
-  s_import_running  = 1;
+  if (s_import_stop_requested)
+    return false;
+
   s_import.lockHeld = false;
 
   if (!rr_download_init(&s_import.dl))
@@ -2080,6 +2082,13 @@ bool rr_import_init(void)
     LOG_ERROR("rr_download_init failed");
     return false;
   }
+
+  if (s_import_stop_requested)
+  {
+    rr_download_deinit(&s_import.dl);
+    return false;
+  }
+
   rr_download_set_cancel(s_import.dl, rr_import_download_cancel, NULL);
 
   // reserve a connection for imports only
@@ -2090,19 +2099,26 @@ bool rr_import_init(void)
     return false;
   }
 
+  if (s_import_stop_requested)
+  {
+    rr_db_release(&s_import.con);
+    rr_download_deinit(&s_import.dl);
+    return false;
+  }
+
   return true;
 }
 
 void rr_import_deinit(void)
 {
-  s_import_running = 0;
+  s_import_stop_requested = 1;
   rr_db_release(&s_import.con);
   rr_download_deinit(&s_import.dl);
 }
 
 void rr_import_stop(void)
 {
-  s_import_running = 0;
+  s_import_stop_requested = 1;
 }
 
 static bool rr_emit_ipv4_range_as_cidrs(unsigned list_id, uint32_t start, uint32_t end)
@@ -2680,7 +2696,7 @@ static RRImportList *rr_import_list_find(const char *name)
 
 static bool rr_import_build_list(RRDBCon *con, RRImportList *list)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   if (list->state == RR_IMPORT_LIST_BUILT)
@@ -2791,7 +2807,7 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
 
 bool rr_import_build_lists(void)
 {
-  if (!s_import_running)
+  if (s_import_stop_requested)
     return false;
 
   RRDBCon *con = s_import.con;
@@ -3050,7 +3066,7 @@ bool rr_import_run(void)
   bool rebuild_unions = false;
   bool rebuild_lists  = true;
   bool check_unions    = true;
-  while(s_import_running)
+  while(!s_import_stop_requested)
   {
     RRDBCon *con = s_import.con;
     if (!rr_db_get(&con))
@@ -3070,7 +3086,7 @@ bool rr_import_run(void)
       check_unions = false;
     }
 
-    for(unsigned i = 0; s_import_running && i < g_config.nbSources; ++i)
+    for(unsigned i = 0; !s_import_stop_requested && i < g_config.nbSources; ++i)
     {
       typeof(*g_config.sources) *src = &g_config.sources[i];
       if (src->type == SOURCE_TYPE_INVALID)
@@ -3140,7 +3156,7 @@ bool rr_import_run(void)
       rr_import_log_timing("fetch", src->name, fetchStarted);
 
       if (downloadResult == RR_DOWNLOAD_RESULT_CANCELLED ||
-          !s_import_running)
+          s_import_stop_requested)
       {
         if (fp)
           fclose(fp);
@@ -3177,7 +3193,7 @@ bool rr_import_run(void)
       const bool     hashSucceeded =
         rr_import_source_content_hash(fp, contentHash);
       rr_import_log_timing("hash", src->name, hashStarted);
-      if (!s_import_running)
+      if (s_import_stop_requested)
       {
         fclose(fp);
         break;
@@ -3255,12 +3271,14 @@ bool rr_import_run(void)
       }
 
       if (success)
-        success = rr_import_batches_flush();
+        success = !s_import_stop_requested &&
+          rr_import_batches_flush() &&
+          !s_import_stop_requested;
       fclose(fp);
       rr_import_log_timing("parse/stage", src->name, startTime);
 
       const char *resultStr;
-      if (success)
+      if (success && !s_import_stop_requested)
       {
         const uint64_t lockStarted = rr_microtime();
         if (!rr_db_start(con))
@@ -3311,7 +3329,7 @@ bool rr_import_run(void)
         LOG_INFO("merging staged import");
         unsigned long long linkedIPv4      = 0;
         unsigned long long linkedIPv6      = 0;
-        const bool         merged          =
+        const bool         merged          = !s_import_stop_requested &&
           rr_import_org_merge_insert       (registrar_id, serial) &&
           rr_import_org_merge_update       (registrar_id, serial) &&
           rr_import_netblockv4_merge_insert(registrar_id, serial) &&
@@ -3331,9 +3349,11 @@ bool rr_import_run(void)
            s_import.stats.deletedOrgs || s_import.stats.updatedIPv4 ||
            s_import.stats.updatedIPv6 || linkedIPv4 || linkedIPv6));
         const bool         finalized       = merged &&
+          !s_import_stop_requested &&
           (!dataChanged || rr_import_state_mark_changed(coverageChanged)) &&
           rr_import_registrar_update_serial(registrar_id, serial,
             &sourceState) &&
+          !s_import_stop_requested &&
           rr_db_commit(con);
         rr_import_log_timing("merge", src->name, mergeStarted);
 
@@ -3388,7 +3408,7 @@ log_result:
       LOG_INFO("  Deleted  : %llu", s_import.stats.deletedIPv6  );
     }
 
-    if (!s_import_running)
+    if (s_import_stop_requested)
     {
       rr_db_put(&con);
       break;
@@ -3435,7 +3455,7 @@ log_result:
       rebuild_lists = false;
 
     rr_db_put(&con);
-    if (!s_import_running)
+    if (s_import_stop_requested)
       break;
 
     usleep(1000000);
@@ -3446,7 +3466,7 @@ fail_con:
 fail:
     check_unions   = true;
     rebuild_lists  = true;
-    if (s_import_running)
+    if (!s_import_stop_requested)
       usleep(1000000);
   }
 

@@ -37,16 +37,16 @@ int main(int argc, char *argv[])
     goto config_deinit;
   }
 
+  if (!rr_signal_init())
+  {
+    LOG_ERROR("failed to install signal handlers");
+    goto db_deinit;
+  }
+
   if (!rr_import_init())
   {
     LOG_ERROR("rr_import_init failed");
     goto db_deinit;
-  }
-
-  if (!rr_signal_init())
-  {
-    LOG_ERROR("failed to install signal handlers");
-    goto import_deinit;
   }
 
   if (!rr_http_init())
