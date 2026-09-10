@@ -284,6 +284,24 @@ RRImport s_import = { 0 };
 
 static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE]);
 
+static void rr_import_log_timing(
+  const char *phase,
+  const char *subject,
+  uint64_t    started)
+{
+  const uint64_t elapsed = rr_microtime() - started;
+  const uint64_t sec     = elapsed / 1000000UL;
+  const uint64_t us      = elapsed % 1000000UL;
+
+  LOG_INFO("timing: %s %s took %02u:%02u:%02u.%03u",
+    phase,
+    subject,
+    (unsigned)(sec / 60 / 60),
+    (unsigned)(sec / 60 % 60),
+    (unsigned)(sec % 60),
+    (unsigned)(us / 1000));
+}
+
 #define STATEMENTS(X) \
   X(registrar_insert              ) \
   X(registrar_update_serial       ) \
@@ -2492,8 +2510,10 @@ static bool rr_import_build_list(RRDBCon *con, RRImportList *list)
         return false;
     }
 
+  unsigned       list_id;
+  const uint64_t started = rr_microtime();
+
   LOG_INFO("  Building: %s", list->cl->name);
-  unsigned list_id;
   rr_import_list_union_batches_reset();
   if (
     !rr_db_start(con) ||
@@ -2512,10 +2532,12 @@ static bool rr_import_build_list(RRDBCon *con, RRImportList *list)
   {
     rr_db_rollback(con);
     rr_import_list_union_batches_reset();
+    rr_import_log_timing("list build", list->cl->name, started);
     LOG_ERROR("failed");
     return false;
   }
 
+  rr_import_log_timing("list build", list->cl->name, started);
   list->state = RR_IMPORT_LIST_BUILT;
   return true;
 }
@@ -2545,20 +2567,26 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
     return true;
   }
 
+  const uint64_t started = rr_microtime();
   LOG_INFO("rebuilding lists");
   for(RRImportList *list = s_import.lists_prepare; list->cl; ++list)
     list->state = RR_IMPORT_LIST_PENDING;
 
   for(RRImportList *list = s_import.lists_prepare; list->cl; ++list)
     if (!rr_import_build_list(con, list))
+    {
+      rr_import_log_timing("list snapshot", "all lists", started);
       return false;
+    }
 
   if (!rr_import_list_state_mark_current(configHash))
   {
+    rr_import_log_timing("list snapshot", "all lists", started);
     LOG_ERROR("failed to mark the list snapshot current");
     return false;
   }
 
+  rr_import_log_timing("list snapshot", "all lists", started);
   LOG_INFO("done");
   return true;
 }
@@ -2834,15 +2862,17 @@ bool rr_import_run(void)
       else
         rr_download_clear_auth(s_import.dl);
 
-      FILE               *fp = NULL;
-      RRDownloadMetadata  response = { 0 };
-      RRDownloadResult    downloadResult =
+      FILE                *fp             = NULL;
+      RRDownloadMetadata   response       = { 0 };
+      const uint64_t       fetchStarted   = rr_microtime();
+      RRDownloadResult     downloadResult =
         rr_download_to_tmpfile_conditional(
           s_import.dl,
           src->url,
           sentValidators ? &registrar.source.download : NULL,
           &fp,
           &response);
+      rr_import_log_timing("fetch", src->name, fetchStarted);
 
       if (downloadResult == RR_DOWNLOAD_RESULT_ERROR)
       {
@@ -2869,8 +2899,12 @@ bool rr_import_run(void)
         continue;
       }
 
-      char contentHash[RR_SHA256_HEX_SIZE];
-      if (!rr_import_source_content_hash(fp, contentHash))
+      char           contentHash[RR_SHA256_HEX_SIZE];
+      const uint64_t hashStarted   = rr_microtime();
+      const bool     hashSucceeded =
+        rr_import_source_content_hash(fp, contentHash);
+      rr_import_log_timing("hash", src->name, hashStarted);
+      if (!hashSucceeded)
       {
         fclose(fp);
         continue;
@@ -2902,16 +2936,17 @@ bool rr_import_run(void)
         continue;
       }
 
+      LOG_INFO("start import %s", src->name);
+      const uint64_t startTime = rr_microtime();
+
       rr_import_batches_reset();
       if (!rr_import_stages_truncate())
       {
+        rr_import_log_timing("parse/stage", src->name, startTime);
         LOG_ERROR("failed to clear the import staging tables");
         fclose(fp);
         goto fail_con;
       }
-
-      LOG_INFO("start import %s", src->name);
-      uint64_t startTime = rr_microtime();
 
       unsigned registrar_id = registrar.id;
       unsigned serial       = registrar.serial + 1;
@@ -2943,12 +2978,17 @@ bool rr_import_run(void)
       if (success)
         success = rr_import_batches_flush();
       fclose(fp);
+      rr_import_log_timing("parse/stage", src->name, startTime);
 
       const char *resultStr;
       if (success)
       {
+        const uint64_t lockStarted = rr_microtime();
         if (!rr_db_start(con))
+        {
+          rr_import_log_timing("registrar lock", src->name, lockStarted);
           goto fail_con;
+        }
 
         unsigned locked_registrar_id;
         unsigned locked_serial;
@@ -2962,6 +3002,7 @@ bool rr_import_run(void)
 
         if (rc != 1)
         {
+          rr_import_log_timing("registrar lock", src->name, lockStarted);
           LOG_ERROR("failed to lock registrar %s", src->name);
           if (!rr_db_rollback(con))
             goto fail_con;
@@ -2975,6 +3016,7 @@ bool rr_import_run(void)
             locked_last_import  != registrar.lastImport ||
             locked_last_check   != registrar.lastCheck)
         {
+          rr_import_log_timing("registrar lock", src->name, lockStarted);
           LOG_WARN("registrar %s changed while its source was being staged", src->name);
           if (!rr_db_rollback(con))
             goto fail_con;
@@ -2983,7 +3025,10 @@ bool rr_import_run(void)
           goto log_result;
         }
 
+        rr_import_log_timing("registrar lock", src->name, lockStarted);
+
         //finalize the registrar
+        const uint64_t mergeStarted = rr_microtime();
         LOG_INFO("merging staged import");
         unsigned long long linkedIPv4      = 0;
         unsigned long long linkedIPv6      = 0;
@@ -3006,12 +3051,14 @@ bool rr_import_run(void)
           (s_import.stats.newOrgs     || s_import.stats.updatedOrgs ||
            s_import.stats.deletedOrgs || s_import.stats.updatedIPv4 ||
            s_import.stats.updatedIPv6 || linkedIPv4 || linkedIPv6));
+        const bool         finalized       = merged &&
+          (!dataChanged || rr_import_state_mark_changed(coverageChanged)) &&
+          rr_import_registrar_update_serial(registrar_id, serial,
+            &sourceState) &&
+          rr_db_commit(con);
+        rr_import_log_timing("merge", src->name, mergeStarted);
 
-        if (!merged ||
-            (dataChanged && !rr_import_state_mark_changed(coverageChanged)) ||
-            !rr_import_registrar_update_serial(registrar_id, serial,
-              &sourceState) ||
-            !rr_db_commit                     (con))
+        if (!finalized)
         {
           LOG_ERROR("failed to finalize");
           if (!rr_db_rollback(con))
@@ -3064,26 +3111,32 @@ log_result:
 
     if (rebuild_unions)
     {
+      const uint64_t buildStarted = rr_microtime();
       LOG_INFO("building union snapshot");
-      if (
-        !rr_import_netblockv4_union_next_truncate() ||
-        !rr_import_netblockv6_union_next_truncate() ||
-        !rr_import_netblockv4_union_next_populate() ||
-        !rr_import_netblockv6_union_next_populate())
+      const bool built =
+        rr_import_netblockv4_union_next_truncate() &&
+        rr_import_netblockv6_union_next_truncate() &&
+        rr_import_netblockv4_union_next_populate() &&
+        rr_import_netblockv6_union_next_populate();
+      rr_import_log_timing("union build", "snapshot", buildStarted);
+      if (!built)
       {
         LOG_ERROR("failed");
         goto fail_con;
       }
 
+      const uint64_t publishStarted = rr_microtime();
       LOG_INFO("publishing union snapshot");
-      if (
-        !rr_db_start                         (con) ||
-        !rr_import_netblockv4_union_delete  () ||
-        !rr_import_netblockv6_union_delete  () ||
-        !rr_import_netblockv4_union_publish () ||
-        !rr_import_netblockv6_union_publish () ||
-        !rr_import_unions_mark_clean         () ||
-        !rr_db_commit                        (con))
+      const bool published =
+        rr_db_start                         (con) &&
+        rr_import_netblockv4_union_delete  () &&
+        rr_import_netblockv6_union_delete  () &&
+        rr_import_netblockv4_union_publish () &&
+        rr_import_netblockv6_union_publish () &&
+        rr_import_unions_mark_clean         () &&
+        rr_db_commit                        (con);
+      rr_import_log_timing("union publish", "snapshot", publishStarted);
+      if (!published)
       {
         LOG_ERROR("failed");
         rr_db_rollback(con);
