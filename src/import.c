@@ -1512,40 +1512,105 @@ static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned
 
 #pragma endregion
 
-static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
+typedef struct RRImportListQuery
 {
+  RRBuffer  *sql;
+  RRDBParam *params;
+  size_t     paramCount;
+  size_t     paramCapacity;
+}
+RRImportListQuery;
+
+static bool db_list_query_add_param(
+  RRImportListQuery *query, const char *value)
+{
+  if (query->paramCount == query->paramCapacity)
+  {
+    if (query->paramCapacity > SIZE_MAX / 2)
+    {
+      LOG_ERROR("too many list query parameters");
+      return false;
+    }
+
+    const size_t newCapacity = query->paramCapacity
+      ? query->paramCapacity * 2
+      : 16;
+    if (newCapacity > SIZE_MAX / sizeof(*query->params))
+    {
+      LOG_ERROR("too many list query parameters");
+      return false;
+    }
+
+    RRDBParam *params = realloc(query->params,
+      sizeof(*query->params) * newCapacity);
+    if (!params)
+    {
+      LOG_ERROR("out of memory");
+      return false;
+    }
+
+    query->params        = params;
+    query->paramCapacity = newCapacity;
+  }
+
+  query->params[query->paramCount++] = (RRDBParam)
+  {
+    .type = RRDB_TYPE_STRING,
+    .bind = (void *)value
+  };
+  return true;
+}
+
+static bool db_build_list_query_where(
+  ConfigList *cl, RRImportListQuery *query)
+{
+  RRBuffer *qb = query->sql;
+
   #define APPEND_OR_FAIL(qb, str) \
     do { \
-      if (!rr_buffer_append_str(qb, str)) \
+      if (rr_buffer_append_str(qb, str) < 0) \
       { \
         LOG_ERROR("out of memory"); \
         return false; \
       } \
     } while (0)
 
+  #define LIST_FIELD_org_handle  "org.handle"
+  #define LIST_FIELD_org_name    "org.name"
+  #define LIST_FIELD_org_descr   "org.descr"
+  #define LIST_FIELD_org_email   "COALESCE(org.email, '')"
+  #define LIST_FIELD_ip_netname  "ip.netname"
+  #define LIST_FIELD_ip_descr    "ip.descr"
+  #define LIST_FIELD_ip_email    "COALESCE(ip.email, '')"
+  #define LIST_FIELD_IMPL(x, y)  LIST_FIELD_ ##x ##_ ##y
+  #define LIST_FIELD(x, y)       LIST_FIELD_IMPL(x, y)
+
   #define ADD_CONDITION(x, y, z) \
     if (cl->x ##_ ##y.z) \
       for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
-        if (!rr_buffer_appendf(qb, \
-          "%sCOALESCE(" #x "." #y ", '') LIKE '%s'", \
-          conditions > 0 ? " OR " : "", \
-          *str)) \
+      { \
+        if (!rr_buffer_appendf(qb, "%s" LIST_FIELD(x, y) " LIKE ?", \
+            conditions > 0 ? " OR " : "")) \
         { \
           LOG_ERROR("out of memory"); \
           return false; \
-        }\
+        } \
+        if (!db_list_query_add_param(query, *str)) \
+          return false; \
+      } \
 
   bool started = false;
   if (cl->registrar)
   {
     started = true;
-    if (!rr_buffer_appendf(qb,
-      "(ip.registrar_id = (SELECT id FROM registrar WHERE name = '%s'))",
-      cl->registrar))
+    if (rr_buffer_append_str(qb,
+      "(ip.registrar_id = (SELECT id FROM registrar WHERE name = ?))") < 0)
     {
       LOG_ERROR("out of memory");
       return false;
     }
+    if (!db_list_query_add_param(query, cl->registrar))
+      return false;
   }
 
   if (cl->has_matches)
@@ -1588,9 +1653,15 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
             APPEND_OR_FAIL(qb, " OR ");
           started = true;
 
-          rr_alloc_sprintf(qb,
-            "(ip.registrar_id = (SELECT id FROM registrar WHERE name = '%s'))",
-            s->name);
+          if (rr_buffer_append_str(qb,
+            "(ip.registrar_id = "
+            "(SELECT id FROM registrar WHERE name = ?))") < 0)
+          {
+            LOG_ERROR("out of memory");
+            return false;
+          }
+          if (!db_list_query_add_param(query, s->name))
+            return false;
           break;
         }
       }
@@ -1610,7 +1681,7 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
 
           if (started)
             APPEND_OR_FAIL(qb, " OR ");
-          if (!db_build_list_query_where(l, qb))
+          if (!db_build_list_query_where(l, query))
             return false;
           started = true;
           break;
@@ -1619,6 +1690,15 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
   }
 
   #undef ADD_CONDITION
+  #undef LIST_FIELD
+  #undef LIST_FIELD_IMPL
+  #undef LIST_FIELD_ip_email
+  #undef LIST_FIELD_ip_descr
+  #undef LIST_FIELD_ip_netname
+  #undef LIST_FIELD_org_email
+  #undef LIST_FIELD_org_descr
+  #undef LIST_FIELD_org_name
+  #undef LIST_FIELD_org_handle
   #undef APPEND_OR_FAIL
   return true;
 }
@@ -1877,7 +1957,8 @@ static bool db_init_fn(RRDBCon *con, void **udata)
     return false;
   }
 
-  RRBuffer qb = { .bufferSz = 8192 };
+  RRBuffer          qb    = { .bufferSz = 8192 };
+  RRImportListQuery query = { .sql = &qb };
 
   typeof(s_import.lists_prepare) list = s_import.lists_prepare;
   for(ConfigList *cl = g_config.lists; cl->name; ++cl)
@@ -1886,10 +1967,15 @@ static bool db_init_fn(RRDBCon *con, void **udata)
       continue;
 
     list->cl = cl;
+    snprintf(list->in_list_name, sizeof(list->in_list_name), "%s", cl->name);
     for(int n = 0; n < 2; ++n)
     {
       const char *ver = n == 0 ? "v4" : "v6";
       rr_buffer_reset(&qb);
+      query.paramCount = 0;
+      if (!db_list_query_add_param(&query, list->in_list_name))
+        goto fail_list_query;
+
       if (!rr_buffer_appendf(&qb,
         "INSERT INTO netblock_%s_list "
         "SELECT "
@@ -1907,8 +1993,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         ver))
       {
         LOG_ERROR("out of memory");
-        rr_buffer_free(&qb);
-        return false;
+        goto fail_list_query;
       }
       size_t start = qb.pos;
 
@@ -1917,39 +2002,32 @@ static bool db_init_fn(RRDBCon *con, void **udata)
         l->include_seen = false;
 
       // build the where part of the query
-      if (!db_build_list_query_where(cl, &qb))
+      if (!db_build_list_query_where(cl, &query))
       {
         LOG_ERROR("out of memory");
-        rr_buffer_free(&qb);
-        return false;
+        goto fail_list_query;
       }
 
       // If there was no query built
       if (start == qb.pos)
       {
         LOG_ERROR("active list has no selection criteria: %s", cl->name);
-        rr_buffer_free(&qb);
-        return false;
+        goto fail_list_query;
       }
 
-      if (!rr_buffer_append_str(&qb, " ORDER BY ip.start_ip ASC"))
+      if (rr_buffer_append_str(&qb, " ORDER BY ip.start_ip ASC") < 0)
       {
         LOG_ERROR("out of memory");
-        rr_buffer_free(&qb);
-        return false;
+        goto fail_list_query;
       }
 
-      strncpy(list->in_list_name, cl->name, sizeof(list->in_list_name));
-      list->stmt[n] = rr_db_stmt_prepare(con, qb.buffer,
-        &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &list->in_list_name },
-        NULL
-      );
+      list->stmt[n] = rr_db_stmt_preparev(con, qb.buffer,
+        query.params, query.paramCount, NULL, 0);
 
       if (!list->stmt[n])
       {
         LOG_ERROR("failed to prepare %s statement for list %s", ver, cl->name);
-        rr_buffer_free(&qb);
-        return false;
+        goto fail_list_query;
       }
     }
 
@@ -1957,8 +2035,14 @@ static bool db_init_fn(RRDBCon *con, void **udata)
   }
 
   #undef CONFIG_LIST_FIELDS
+  free(query.params);
   rr_buffer_free(&qb);
   return true;
+
+fail_list_query:
+  free(query.params);
+  rr_buffer_free(&qb);
+  return false;
 }
 
 static bool db_deinit_fn(RRDBCon *con, void **udata)

@@ -97,10 +97,10 @@ Key options include:
 
 Email filters use the same SQL `LIKE` patterns as the other fields. RackRadar
 extracts valid addresses directly embedded in RPSL organization/netblock
-attributes (including remarks, notify, e-mail, and abuse fields) and ARIN
-organization/netblock comments or email elements. Multiple addresses are
-deduplicated case-insensitively. Reference-only contact handles, such as RPSL
-`abuse-c` and ARIN `pocLinks`, are not dereferenced.
+attribute values, including remarks, notify, and e-mail values, and from ARIN
+organization/netblock comments. Multiple addresses are deduplicated
+case-insensitively. Reference-only contact handles, such as RPSL `abuse-c` and
+ARIN `pocLinks`, are not dereferenced.
 
 ### Example configuration
 
@@ -175,9 +175,9 @@ lists:
    parsing unchanged data. Changed data is parsed into staging tables and
    merged atomically into the live registrar, organization, and netblock
    tables. A changed parser/source configuration permits one immediate fetch;
-   failed or interrupted attempts remain subject to the configured interval
-   across restarts. Imports run in a loop with a one-second sleep between
-   cycles.
+   applying a schema migration alone does not. Failed or interrupted attempts
+   remain subject to the configured interval across restarts. Imports run in a
+   loop with a one-second sleep between cycles.
 3. **Union & list rebuilds**: Imports that change address coverage trigger an
    atomic refresh of the merged union snapshot. Named lists are rebuilt only
    when imported data or their configuration changes, so downstream consumers
