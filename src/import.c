@@ -12,8 +12,9 @@
 #include <stdlib.h>
 #include <assert.h>
 
-#define RR_IMPORT_BATCH_ROWS 64
-#define RR_IMPORT_PARSER_VERSION "RackRadar-source-parser-v1"
+#define RR_IMPORT_BATCH_ROWS            64
+#define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
+#define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v1"
 
 typedef struct RRImportSourceState
 {
@@ -62,12 +63,49 @@ typedef struct RRImportBatch
 }
 RRImportBatch;
 
+typedef struct RRImportListUnionV4
+{
+  unsigned listId;
+  unsigned ip;
+  uint8_t  prefixLen;
+}
+RRImportListUnionV4;
+
+typedef struct RRImportListUnionV6
+{
+  unsigned          listId;
+  unsigned __int128 ip;
+  uint8_t           prefixLen;
+}
+RRImportListUnionV6;
+
+typedef struct RRImportListUnionBatch
+{
+  struct
+  {
+    RRDBStmt           *stmt;
+    RRImportListUnionV4 rows[RR_IMPORT_LIST_UNION_BATCH_ROWS];
+    size_t              count;
+  }
+  ipv4;
+
+  struct
+  {
+    RRDBStmt           *stmt;
+    RRImportListUnionV6 rows[RR_IMPORT_LIST_UNION_BATCH_ROWS];
+    size_t              count;
+  }
+  ipv6;
+}
+RRImportListUnionBatch;
+
 typedef struct RRImport
 {
-  RRDownload    *dl;
-  RRDBCon       *con;
-  RRDBStatistics stats;
-  RRImportBatch  batch;
+  RRDownload             *dl;
+  RRDBCon                *con;
+  RRDBStatistics          stats;
+  RRImportBatch           batch;
+  RRImportListUnionBatch  listUnionBatch;
 
   STMT_STRUCT(registrar_insert,
     char in_name[32];
@@ -1179,20 +1217,121 @@ static bool rr_import_netblockv6_list_union_delete(unsigned in_list_id)
   return rr_db_stmt_execute(s_import.netblockv6_list_union_delete.stmt, NULL);
 }
 
+static void rr_import_list_union_batches_reset(void)
+{
+  s_import.listUnionBatch.ipv4.count = 0;
+  s_import.listUnionBatch.ipv6.count = 0;
+}
+
+static bool rr_import_netblockv4_list_union_batch_flush(void)
+{
+  const size_t count = s_import.listUnionBatch.ipv4.count;
+  if (count == 0)
+    return true;
+
+  if (count == RR_IMPORT_LIST_UNION_BATCH_ROWS)
+  {
+    if (!rr_db_stmt_execute(s_import.listUnionBatch.ipv4.stmt, NULL))
+    {
+      LOG_ERROR("failed to write IPv4 list union batch (%zu rows)", count);
+      return false;
+    }
+  }
+  else
+    for(size_t i = 0; i < count; ++i)
+    {
+      const RRImportListUnionV4 *row = &s_import.listUnionBatch.ipv4.rows[i];
+      s_import.netblockv4_list_union_insert.in_list_id    = row->listId;
+      s_import.netblockv4_list_union_insert.in_ip         = row->ip;
+      s_import.netblockv4_list_union_insert.in_prefix_len = row->prefixLen;
+      if (!rr_db_stmt_execute(s_import.netblockv4_list_union_insert.stmt, NULL))
+      {
+        LOG_ERROR("failed to write IPv4 list union row %zu", i);
+        return false;
+      }
+    }
+
+  s_import.listUnionBatch.ipv4.count = 0;
+  return true;
+}
+
+static bool rr_import_netblockv6_list_union_batch_flush(void)
+{
+  const size_t count = s_import.listUnionBatch.ipv6.count;
+  if (count == 0)
+    return true;
+
+  if (count == RR_IMPORT_LIST_UNION_BATCH_ROWS)
+  {
+    if (!rr_db_stmt_execute(s_import.listUnionBatch.ipv6.stmt, NULL))
+    {
+      LOG_ERROR("failed to write IPv6 list union batch (%zu rows)", count);
+      return false;
+    }
+  }
+  else
+    for(size_t i = 0; i < count; ++i)
+    {
+      const RRImportListUnionV6 *row = &s_import.listUnionBatch.ipv6.rows[i];
+      s_import.netblockv6_list_union_insert.in_list_id    = row->listId;
+      s_import.netblockv6_list_union_insert.in_ip         = row->ip;
+      s_import.netblockv6_list_union_insert.in_prefix_len = row->prefixLen;
+      if (!rr_db_stmt_execute(s_import.netblockv6_list_union_insert.stmt, NULL))
+      {
+        LOG_ERROR("failed to write IPv6 list union row %zu", i);
+        return false;
+      }
+    }
+
+  s_import.listUnionBatch.ipv6.count = 0;
+  return true;
+}
+
+static bool rr_import_list_union_batches_flush(void)
+{
+  return
+    rr_import_netblockv4_list_union_batch_flush() &&
+    rr_import_netblockv6_list_union_batch_flush();
+}
+
 static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned in_ip, uint8_t in_prefix_len)
 {
-  s_import.netblockv4_list_union_insert.in_list_id    = in_list_id;
-  s_import.netblockv4_list_union_insert.in_ip         = in_ip;
-  s_import.netblockv4_list_union_insert.in_prefix_len = in_prefix_len;
-  return rr_db_stmt_execute(s_import.netblockv4_list_union_insert.stmt, NULL);
+  if (s_import.listUnionBatch.ipv4.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
+  {
+    LOG_ERROR("IPv4 list union batch overflow");
+    return false;
+  }
+
+  const size_t         index = s_import.listUnionBatch.ipv4.count++;
+  RRImportListUnionV4 *row   = &s_import.listUnionBatch.ipv4.rows[index];
+  row->listId    = in_list_id;
+  row->ip        = in_ip;
+  row->prefixLen = in_prefix_len;
+
+  if (s_import.listUnionBatch.ipv4.count == RR_IMPORT_LIST_UNION_BATCH_ROWS)
+    return rr_import_netblockv4_list_union_batch_flush();
+
+  return true;
 }
 
 static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned __int128 in_ip, uint8_t in_prefix_len)
 {
-  s_import.netblockv6_list_union_insert.in_list_id    = in_list_id;
-  s_import.netblockv6_list_union_insert.in_ip         = in_ip;
-  s_import.netblockv6_list_union_insert.in_prefix_len = in_prefix_len;
-  return rr_db_stmt_execute(s_import.netblockv6_list_union_insert.stmt, NULL);
+  if (s_import.listUnionBatch.ipv6.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
+  {
+    LOG_ERROR("IPv6 list union batch overflow");
+    return false;
+  }
+
+  const size_t         index = s_import.listUnionBatch.ipv6.count++;
+  RRImportListUnionV6 *row   = &s_import.listUnionBatch.ipv6.rows[index];
+  row->listId    = in_list_id;
+  row->ip        = in_ip;
+  row->prefixLen = in_prefix_len;
+
+  if (s_import.listUnionBatch.ipv6.count == RR_IMPORT_LIST_UNION_BATCH_ROWS)
+    return rr_import_netblockv6_list_union_batch_flush();
+
+  return true;
 }
 
 #pragma endregion
@@ -1430,6 +1569,81 @@ static void rr_import_batches_free(void)
   rr_import_batches_reset();
 }
 
+static RRDBStmt *rr_import_prepare_list_union_batch(RRDBCon *con, bool ipv6)
+{
+  RRBuffer  sql = { 0 };
+  RRDBParam params[RR_IMPORT_LIST_UNION_BATCH_ROWS * 3];
+  size_t    param = 0;
+
+  if (!rr_buffer_appendf(&sql,
+    "INSERT INTO netblock_v%s_list_union (list_id, ip, prefix_len) VALUES ",
+    ipv6 ? "6" : "4"))
+    goto fail;
+
+  for(size_t i = 0; i < RR_IMPORT_LIST_UNION_BATCH_ROWS; ++i)
+  {
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?)", i == 0 ? "" : ","))
+      goto fail;
+
+    if (ipv6)
+    {
+      RRImportListUnionV6 *row = &s_import.listUnionBatch.ipv6.rows[i];
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &row->listId };
+      params[param++] = (RRDBParam)
+      {
+        .type = RRDB_TYPE_BINARY,
+        .bind = &row->ip,
+        .size = sizeof(row->ip)
+      };
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &row->prefixLen };
+    }
+    else
+    {
+      RRImportListUnionV4 *row = &s_import.listUnionBatch.ipv4.rows[i];
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &row->listId    };
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT , .bind = &row->ip        };
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &row->prefixLen };
+    }
+  }
+
+  RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
+    params, ARRAY_SIZE(params), NULL, 0);
+  rr_buffer_free(&sql);
+  return stmt;
+
+fail:
+  LOG_ERROR("failed to construct the IPv%s list union batch statement",
+    ipv6 ? "6" : "4");
+  rr_buffer_free(&sql);
+  return NULL;
+}
+
+static bool rr_import_list_union_batches_prepare(RRDBCon *con)
+{
+  s_import.listUnionBatch.ipv4.stmt =
+    rr_import_prepare_list_union_batch(con, false);
+  if (!s_import.listUnionBatch.ipv4.stmt)
+    return false;
+
+  s_import.listUnionBatch.ipv6.stmt =
+    rr_import_prepare_list_union_batch(con, true);
+  if (!s_import.listUnionBatch.ipv6.stmt)
+  {
+    rr_db_stmt_free(&s_import.listUnionBatch.ipv4.stmt);
+    return false;
+  }
+
+  rr_import_list_union_batches_reset();
+  return true;
+}
+
+static void rr_import_list_union_batches_free(void)
+{
+  rr_db_stmt_free(&s_import.listUnionBatch.ipv4.stmt);
+  rr_db_stmt_free(&s_import.listUnionBatch.ipv6.stmt);
+  rr_import_list_union_batches_reset();
+}
+
 static bool rr_import_lock_acquire(void)
 {
   s_import.import_lock_acquire.out_acquired = 0;
@@ -1458,6 +1672,9 @@ static bool db_init_fn(RRDBCon *con, void **udata)
 
   if (!g_config.lists)
     return true;
+
+  if (!rr_import_list_union_batches_prepare(con))
+    return false;
 
   s_import.lists_prepare = calloc(g_config.nbListsActive + 1, sizeof(*s_import.lists_prepare));
   if (!s_import.lists_prepare)
@@ -1559,6 +1776,7 @@ static bool db_init_fn(RRDBCon *con, void **udata)
 static bool db_deinit_fn(RRDBCon *con, void **udata)
 {
   rr_import_lock_release();
+  rr_import_list_union_batches_free();
   rr_import_batches_free();
   STMT_FREE(STATEMENTS, *udata);
 
@@ -2172,6 +2390,7 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
   {
     LOG_INFO("  Building: %s", list->cl->name);
     unsigned list_id;
+    rr_import_list_union_batches_reset();
     if (
       !rr_db_start(con) ||
       !rr_import_list_insert(list->cl->name) ||
@@ -2184,9 +2403,11 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
       !rr_import_netblockv6_list_union_delete  (list_id) ||
       !rr_import_netblockv4_list_union_populate(con, list->cl, list_id) ||
       !rr_import_netblockv6_list_union_populate(con, list->cl, list_id) ||
+      !rr_import_list_union_batches_flush      () ||
       !rr_db_commit(con))
     {
       rr_db_rollback(con);
+      rr_import_list_union_batches_reset();
       LOG_ERROR("failed");
       return false;
     }
