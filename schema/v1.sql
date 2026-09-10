@@ -45,8 +45,6 @@ CREATE TABLE IF NOT EXISTS org
 
   PRIMARY KEY(id),
 
-  KEY idx_serial(serial),
-
   CONSTRAINT uk_org_registrar_id_handle
     UNIQUE INDEX(registrar_id, handle),
 
@@ -86,11 +84,8 @@ CREATE TABLE IF NOT EXISTS netblock_v4
 
   PRIMARY KEY(id),
 
-  KEY idx_serial     (serial),
-  KEY idx_start      (start_ip),
   KEY idx_start_end  (start_ip, end_ip),
   KEY idx_end_start  (end_ip  , start_ip),
-  KEY idx_registrar  (registrar_id),
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
   KEY idx_netname    (netname),
@@ -166,10 +161,8 @@ CREATE TABLE IF NOT EXISTS netblock_v6
 
   PRIMARY KEY(id),
 
-  KEY idx_serial     (serial),
   KEY idx_start_end  (start_ip, end_ip),
   KEY idx_end_start  (end_ip  , start_ip),
-  KEY idx_registrar  (registrar_id),
   KEY idx_org_id     (org_id),
   KEY idx_org_handle (org_handle),
   KEY idx_netname    (netname),
@@ -302,9 +295,7 @@ CREATE TABLE IF NOT EXISTS netblock_v4_list_union
   ip         INT     UNSIGNED NOT NULL,
   prefix_len TINYINT UNSIGNED NOT NULL,
 
-  PRIMARY KEY  (list_id, ip),
-
-  KEY idx_list (list_id),
+  PRIMARY KEY(list_id, ip),
 
   CONSTRAINT fk_netblock_v4_list_union_list
     FOREIGN KEY (list_id) REFERENCES list(id)
@@ -320,9 +311,7 @@ CREATE TABLE IF NOT EXISTS netblock_v6_list_union
   ip         BINARY(16)       NOT NULL,
   prefix_len TINYINT UNSIGNED NOT NULL,
 
-  PRIMARY KEY  (list_id, ip),
-
-  KEY idx_list (list_id),
+  PRIMARY KEY(list_id, ip),
 
   CONSTRAINT fk_netblock_v6_list_union_list
     FOREIGN KEY (list_id) REFERENCES list(id)

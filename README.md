@@ -64,13 +64,14 @@ union tables for merged ranges, and list management tables.【F:schema/v1.sql†
 
 Existing installations must apply each newer schema migration in order before
 starting the matching RackRadar binary. For example, upgrading a v1 database
-to the current schema requires all three migrations; start at the next schema
+to the current schema requires all four migrations; start at the next schema
 version after the one already installed:
 
 ```bash
 mysql -u <user> -p rackradar < schema/v2.sql
 mysql -u <user> -p rackradar < schema/v3.sql
 mysql -u <user> -p rackradar < schema/v4.sql
+mysql -u <user> -p rackradar < schema/v5.sql
 ```
 
 ## Configuration
