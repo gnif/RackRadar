@@ -144,13 +144,14 @@ DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
     "a.netname, "
     "a.descr "
   "FROM "
+    "(SELECT unions_dirty FROM import_state WHERE id = 1) s "
     /* Guard: only proceed if IP is inside the union coverage */
-    "(SELECT end_ip "
+    "LEFT JOIN (SELECT end_ip "
       "FROM netblock_v4_union "
       "WHERE start_ip <= ? "
       "ORDER BY start_ip DESC "
       "LIMIT 1"
-    ") g "
+    ") g ON s.unions_dirty = 0 "
     /* Real lookup */
     "JOIN ("
       "SELECT id "
@@ -158,7 +159,7 @@ DEFAULT_STMT(DBQueryData, lookup_ipv4_by_addr,
       "WHERE start_ip <= ? AND end_ip >= ? "
       "ORDER BY start_ip DESC "
       "LIMIT 1"
-    ") x ON g.end_ip >= ? "
+    ") x ON s.unions_dirty != 0 OR g.end_ip >= ? "
     "JOIN netblock_v4 AS a ON a.id = x.id "
     "LEFT JOIN org AS b ON b.id = a.org_id",
 
@@ -215,12 +216,14 @@ DEFAULT_STMT(DBQueryData, lookup_ipv6_by_addr,
     "a.netname, "
     "a.descr "
   "FROM "
+    "(SELECT unions_dirty FROM import_state WHERE id = 1) s "
     /* Guard: only proceed if IP is inside the union coverage */
-    "(SELECT end_ip "
+    "LEFT JOIN (SELECT end_ip "
     " FROM netblock_v6_union "
     " WHERE start_ip <= ? "
     " ORDER BY start_ip DESC "
     " LIMIT 1) g "
+    "ON s.unions_dirty = 0 "
     /* Real lookup */
     "JOIN ("
       "SELECT id "
@@ -228,7 +231,7 @@ DEFAULT_STMT(DBQueryData, lookup_ipv6_by_addr,
       "WHERE start_ip <= ? AND end_ip >= ? "
       "ORDER BY start_ip DESC "
       "LIMIT 1"
-    ") x ON g.end_ip >= ? "
+    ") x ON s.unions_dirty != 0 OR g.end_ip >= ? "
   "JOIN netblock_v6 AS a ON a.id = x.id "
   "LEFT JOIN org AS b ON b.id = a.org_id",
 

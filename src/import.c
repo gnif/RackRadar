@@ -63,10 +63,21 @@ typedef struct RRImport
     unsigned in_serial;
   );
 
-  STMT_STRUCT(netblockv4_union_truncate,);
-  STMT_STRUCT(netblockv6_union_truncate,);
-  STMT_STRUCT(netblockv4_union_populate,);
-  STMT_STRUCT(netblockv6_union_populate,);
+  STMT_STRUCT(unions_dirty_get,
+    uint8_t out_dirty;
+  );
+
+  STMT_STRUCT(unions_mark_dirty,);
+  STMT_STRUCT(unions_mark_clean,);
+
+  STMT_STRUCT(netblockv4_union_next_truncate,);
+  STMT_STRUCT(netblockv6_union_next_truncate,);
+  STMT_STRUCT(netblockv4_union_next_populate,);
+  STMT_STRUCT(netblockv6_union_next_populate,);
+  STMT_STRUCT(netblockv4_union_delete,);
+  STMT_STRUCT(netblockv6_union_delete,);
+  STMT_STRUCT(netblockv4_union_publish,);
+  STMT_STRUCT(netblockv6_union_publish,);
 
   STMT_STRUCT(list_insert,
     char in_list_name[32];
@@ -111,10 +122,17 @@ RRImport s_import = { 0 };
   X(netblockv6_insert             ) \
   X(netblockv6_delete_old         ) \
   X(netblockv6_link_org           ) \
-  X(netblockv4_union_truncate     ) \
-  X(netblockv6_union_truncate     ) \
-  X(netblockv4_union_populate     ) \
-  X(netblockv6_union_populate     ) \
+  X(unions_dirty_get              ) \
+  X(unions_mark_dirty             ) \
+  X(unions_mark_clean             ) \
+  X(netblockv4_union_next_truncate) \
+  X(netblockv6_union_next_truncate) \
+  X(netblockv4_union_next_populate) \
+  X(netblockv6_union_next_populate) \
+  X(netblockv4_union_delete       ) \
+  X(netblockv6_union_delete       ) \
+  X(netblockv4_union_publish      ) \
+  X(netblockv6_union_publish      ) \
   X(list_insert                   ) \
   X(netblockv4_list_delete        ) \
   X(netblockv6_list_delete        ) \
@@ -276,16 +294,30 @@ DEFAULT_STMT(RRImport, netblockv6_link_org,
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
 );
 
-DEFAULT_STMT(RRImport, netblockv4_union_truncate,
-  "TRUNCATE TABLE netblock_v4_union"
+DEFAULT_STMT(RRImport, unions_dirty_get,
+  "SELECT unions_dirty FROM import_state WHERE id = 1",
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_dirty }
 );
 
-DEFAULT_STMT(RRImport, netblockv6_union_truncate,
-  "TRUNCATE TABLE netblock_v6_union"
+DEFAULT_STMT(RRImport, unions_mark_dirty,
+  "UPDATE import_state SET unions_dirty = 1 WHERE id = 1"
 );
 
-DEFAULT_STMT(RRImport, netblockv4_union_populate,
-  "INSERT INTO netblock_v4_union (start_ip, end_ip) "
+DEFAULT_STMT(RRImport, unions_mark_clean,
+  "UPDATE import_state SET unions_dirty = 0 WHERE id = 1"
+);
+
+DEFAULT_STMT(RRImport, netblockv4_union_next_truncate,
+  "TRUNCATE TABLE netblock_v4_union_next"
+);
+
+DEFAULT_STMT(RRImport, netblockv6_union_next_truncate,
+  "TRUNCATE TABLE netblock_v6_union_next"
+);
+
+DEFAULT_STMT(RRImport, netblockv4_union_next_populate,
+  "INSERT INTO netblock_v4_union_next (start_ip, end_ip) "
   "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
   "FROM ( "
     "SELECT "
@@ -303,8 +335,8 @@ DEFAULT_STMT(RRImport, netblockv4_union_populate,
   "GROUP BY grp"
 );
 
-DEFAULT_STMT(RRImport, netblockv6_union_populate,
-  "INSERT INTO netblock_v6_union (start_ip, end_ip) "
+DEFAULT_STMT(RRImport, netblockv6_union_next_populate,
+  "INSERT INTO netblock_v6_union_next (start_ip, end_ip) "
   "SELECT MIN(start_ip) AS start_ip, MAX(running_end) AS end_ip "
   "FROM ( "
     "SELECT "
@@ -326,6 +358,24 @@ DEFAULT_STMT(RRImport, netblockv6_union_populate,
     "ORDER BY t.start_ip, t.end_ip "
   ") x "
   "GROUP BY grp"
+);
+
+DEFAULT_STMT(RRImport, netblockv4_union_delete,
+  "DELETE FROM netblock_v4_union"
+);
+
+DEFAULT_STMT(RRImport, netblockv6_union_delete,
+  "DELETE FROM netblock_v6_union"
+);
+
+DEFAULT_STMT(RRImport, netblockv4_union_publish,
+  "INSERT INTO netblock_v4_union (start_ip, end_ip) "
+  "SELECT start_ip, end_ip FROM netblock_v4_union_next"
+);
+
+DEFAULT_STMT(RRImport, netblockv6_union_publish,
+  "INSERT INTO netblock_v6_union (start_ip, end_ip) "
+  "SELECT start_ip, end_ip FROM netblock_v6_union_next"
 );
 
 DEFAULT_STMT(RRImport, list_insert,
@@ -537,24 +587,62 @@ static bool rr_import_netblockv6_link_org(unsigned in_registrar_id, unsigned in_
   return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, NULL);
 }
 
-static bool rr_import_netblockv4_union_truncate(void)
+static int rr_import_unions_dirty(bool *out_dirty)
 {
-  return rr_db_stmt_execute(s_import.netblockv4_union_truncate.stmt, NULL);
+  int rc = rr_db_stmt_fetch_one(s_import.unions_dirty_get.stmt);
+  if (rc == 1)
+    *out_dirty = s_import.unions_dirty_get.out_dirty != 0;
+  return rc;
 }
 
-static bool rr_import_netblockv6_union_truncate(void)
+static bool rr_import_unions_mark_dirty(void)
 {
-  return rr_db_stmt_execute(s_import.netblockv6_union_truncate.stmt, NULL);
+  return rr_db_stmt_execute(s_import.unions_mark_dirty.stmt, NULL);
 }
 
-static bool rr_import_netblockv4_union_populate(void)
+static bool rr_import_unions_mark_clean(void)
 {
-  return rr_db_stmt_execute(s_import.netblockv4_union_populate.stmt, NULL);
+  return rr_db_stmt_execute(s_import.unions_mark_clean.stmt, NULL);
 }
 
-static bool rr_import_netblockv6_union_populate(void)
+static bool rr_import_netblockv4_union_next_truncate(void)
 {
-  return rr_db_stmt_execute(s_import.netblockv6_union_populate.stmt, NULL);
+  return rr_db_stmt_execute(s_import.netblockv4_union_next_truncate.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_union_next_truncate(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv6_union_next_truncate.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_union_next_populate(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv4_union_next_populate.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_union_next_populate(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv6_union_next_populate.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_union_delete(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv4_union_delete.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_union_delete(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv6_union_delete.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_union_publish(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv4_union_publish.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_union_publish(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv6_union_publish.stmt, NULL);
 }
 
 static bool rr_import_list_insert(const char *in_list_name)
@@ -1476,6 +1564,7 @@ bool rr_import_run(void)
   int rc;
   bool rebuild_unions = false;
   bool rebuild_lists  = false;
+  bool check_unions    = true;
   while(true)
   {
     RRDBCon *con = s_import.con;
@@ -1483,6 +1572,17 @@ bool rr_import_run(void)
     {
       LOG_ERROR("failed to get the reserved connection");
       goto fail;
+    }
+
+    if (check_unions)
+    {
+      rc = rr_import_unions_dirty(&rebuild_unions);
+      if (rc != 1)
+      {
+        LOG_ERROR("failed to read the import state");
+        goto fail_con;
+      }
+      check_unions = false;
     }
 
     for(unsigned i = 0; i < g_config.nbSources; ++i)
@@ -1601,6 +1701,7 @@ bool rr_import_run(void)
           !rr_import_netblockv4_delete_old  (registrar_id, serial) ||
           !rr_import_netblockv6_delete_old  (registrar_id, serial) ||
           !rr_import_org_delete_old         (registrar_id, serial) ||
+          !rr_import_unions_mark_dirty      () ||
           !rr_import_registrar_update_serial(registrar_id, serial) ||
           !rr_db_commit                     (con))
         {
@@ -1646,14 +1747,26 @@ bool rr_import_run(void)
 
     if (rebuild_unions)
     {
-      LOG_INFO("rebuilding unions");
+      LOG_INFO("building union snapshot");
       if (
-        !rr_db_start(con) ||
-        !rr_import_netblockv4_union_truncate() ||
-        !rr_import_netblockv6_union_truncate() ||
-        !rr_import_netblockv4_union_populate() ||
-        !rr_import_netblockv6_union_populate() ||
-        !rr_db_commit(con))
+        !rr_import_netblockv4_union_next_truncate() ||
+        !rr_import_netblockv6_union_next_truncate() ||
+        !rr_import_netblockv4_union_next_populate() ||
+        !rr_import_netblockv6_union_next_populate())
+      {
+        LOG_ERROR("failed");
+        goto fail_con;
+      }
+
+      LOG_INFO("publishing union snapshot");
+      if (
+        !rr_db_start                         (con) ||
+        !rr_import_netblockv4_union_delete  () ||
+        !rr_import_netblockv6_union_delete  () ||
+        !rr_import_netblockv4_union_publish () ||
+        !rr_import_netblockv6_union_publish () ||
+        !rr_import_unions_mark_clean         () ||
+        !rr_db_commit                        (con))
       {
         LOG_ERROR("failed");
         rr_db_rollback(con);

@@ -61,6 +61,13 @@ mysql -u <user> -p rackradar < schema/v1.sql
 The schema defines tables for registrars, organizations, IPv4/IPv6 netblocks,
 union tables for merged ranges, and list management tables.【F:schema/v1.sql†L1-L200】【F:schema/v1.sql†L200-L232】
 
+Existing installations must apply each newer schema migration in order before
+starting the matching RackRadar binary. For example, to upgrade a v1 database:
+
+```bash
+mysql -u <user> -p rackradar < schema/v2.sql
+```
+
 ## Configuration
 
 RackRadar loads its configuration from `/etc/rackradar/main.cfg` using
