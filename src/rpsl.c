@@ -110,7 +110,12 @@ static void rr_rpsl_extract_emails(
       return;
   }
 
-  if (line[0] != ' ' && line[0] != '\t' && line[0] != '+')
+  if (line[0] == '+')
+  {
+    value    = line + 1;
+    valueLen = len - 1;
+  }
+  else if (line[0] != ' ' && line[0] != '\t')
   {
     const char *separator = memchr(line, ':', len);
     if (!separator)

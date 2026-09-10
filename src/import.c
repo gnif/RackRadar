@@ -15,7 +15,7 @@
 
 #define RR_IMPORT_BATCH_ROWS            64
 #define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
-#define RR_IMPORT_LIST_VERSION          "RackRadar-list-builder-v1"
+#define RR_IMPORT_LIST_VERSION          "RackRadar-list-builder-v2"
 #define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v2"
 
 typedef struct RRImportSourceState
@@ -1526,7 +1526,8 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
   #define ADD_CONDITION(x, y, z) \
     if (cl->x ##_ ##y.z) \
       for(const char **str = cl->x ##_ ##y.z; *str; ++str, ++conditions) \
-        if (!rr_buffer_appendf(qb, "%s" #x "." #y " LIKE '%s'", \
+        if (!rr_buffer_appendf(qb, \
+          "%sCOALESCE(" #x "." #y ", '') LIKE '%s'", \
           conditions > 0 ? " OR " : "", \
           *str)) \
         { \
@@ -2782,8 +2783,10 @@ static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE])
     rr_import_hash_list_filter(&ctx, &list->org_handle);
     rr_import_hash_list_filter(&ctx, &list->org_name  );
     rr_import_hash_list_filter(&ctx, &list->org_descr );
+    rr_import_hash_list_filter(&ctx, &list->org_email );
     rr_import_hash_list_filter(&ctx, &list->ip_netname);
     rr_import_hash_list_filter(&ctx, &list->ip_descr  );
+    rr_import_hash_list_filter(&ctx, &list->ip_email  );
   }
 
   rr_sha256_final(&ctx, digest);

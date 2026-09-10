@@ -52,17 +52,27 @@ lists:
       match : [];
       ignore: [];
     };
+    ip_email:
+    {
+      match : [];
+      ignore: [];
+    };
     org_name:
     {
       match : [ "OVH %", "OVHCloud%" ];
       ignore: [];
     };
-    org_org:
+    org_handle:
     {
       match : [];
       ignore: [];
     };
     org_descr:
+    {
+      match : [];
+      ignore: [];
+    };
+    org_email:
     {
       match : [];
       ignore: [];

@@ -17,8 +17,10 @@
   X(org, handle ) \
   X(org, name   ) \
   X(org, descr  ) \
+  X(org, email  ) \
   X(ip , netname) \
-  X(ip , descr  )
+  X(ip , descr  ) \
+  X(ip , email  )
 
 typedef struct ConfigFilter
 {

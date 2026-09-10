@@ -51,12 +51,15 @@ The resulting executable `RackRadar` is produced in the `build/` directory.
 ## Database setup
 
 RackRadar expects a MariaDB/MySQL database. For a fresh installation, create a
-database and user, then apply `schema/v1.sql`. The v1 schema contains the full
-current schema; fresh installations do not apply the migration files:
+database and user, then apply `schema/v1.sql`, `schema/v7.sql`, and
+`schema/v8.sql`. The v1 schema contains the changes covered by migrations v2
+through v6:
 
 ```bash
 mysql -u <user> -p -e "CREATE DATABASE rackradar CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u <user> -p rackradar < schema/v1.sql
+mysql -u <user> -p rackradar < schema/v7.sql
+mysql -u <user> -p rackradar < schema/v8.sql
 ```
 
 The schema defines tables for registrars, organizations, IPv4/IPv6 netblocks,
@@ -64,7 +67,7 @@ union tables for merged ranges, and list management tables.【F:schema/v1.sql†
 
 Existing installations must apply each newer schema migration in order before
 starting the matching RackRadar binary. For example, upgrading a v1 database
-to the current schema requires all five migrations; start at the next schema
+to the current schema requires all seven migrations; start at the next schema
 version after the one already installed:
 
 ```bash
@@ -73,6 +76,8 @@ mysql -u <user> -p rackradar < schema/v3.sql
 mysql -u <user> -p rackradar < schema/v4.sql
 mysql -u <user> -p rackradar < schema/v5.sql
 mysql -u <user> -p rackradar < schema/v6.sql
+mysql -u <user> -p rackradar < schema/v7.sql
+mysql -u <user> -p rackradar < schema/v8.sql
 ```
 
 ## Configuration
@@ -86,8 +91,16 @@ Key options include:
 - `sources`: one or more RIR downloads with `type` (`RPSL` or `ARIN`),
   `frequency` (seconds between imports), `url`, and optional HTTP `user`/`pass`.
 - `lists`: named list definitions with optional `include`/`exclude` arrays and
-  per-field filters (`ip.netname`, `ip.descr`, `org.handle`, `org.name`,
-  `org.descr`).【F:settings.sample†L1-L56】
+  per-field filters (`ip.netname`, `ip.descr`, `ip.email`, `org.handle`,
+  `org.name`, `org.descr`, `org.email`). Filter names use underscores in the
+  configuration, for example `ip_email` and `org_email`.
+
+Email filters use the same SQL `LIKE` patterns as the other fields. RackRadar
+extracts valid addresses directly embedded in RPSL organization/netblock
+attributes (including remarks, notify, e-mail, and abuse fields) and ARIN
+organization/netblock comments or email elements. Multiple addresses are
+deduplicated case-insensitively. Reference-only contact handles, such as RPSL
+`abuse-c` and ARIN `pocLinks`, are not dereferenced.
 
 ### Example configuration
 
@@ -142,6 +155,11 @@ lists:
       match : [ "Example%" ];
       ignore: [];
     };
+    org_email:
+    {
+      match : [ "%@example.com%" ];
+      ignore: [];
+    };
   };
 };
 ```
@@ -152,11 +170,14 @@ lists:
    database, starts the importer, and launches the HTTP server on the configured
    port.【F:src/main.c†L1-L38】
 2. **Import loop**: `rr_import_run` continuously iterates over configured
-   sources. For each source it checks the last fetch time and uses HTTP
+   sources. For each source it checks the last fetch-attempt time and uses HTTP
    validators plus SHA-256 content and parser-configuration hashes to avoid
    parsing unchanged data. Changed data is parsed into staging tables and
    merged atomically into the live registrar, organization, and netblock
-   tables. Imports run in a loop with a one-second sleep between cycles.
+   tables. A changed parser/source configuration permits one immediate fetch;
+   failed or interrupted attempts remain subject to the configured interval
+   across restarts. Imports run in a loop with a one-second sleep between
+   cycles.
 3. **Union & list rebuilds**: Imports that change address coverage trigger an
    atomic refresh of the merged union snapshot. Named lists are rebuilt only
    when imported data or their configuration changes, so downstream consumers
