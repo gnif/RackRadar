@@ -108,18 +108,18 @@ Key options include:
   `frequency` (seconds between imports), `url`, and optional HTTP `user`/`pass`.
 - `lists`: named list definitions with optional `include`/`exclude` arrays and
   per-field filters (`ip_netname`, `ip_descr`, `ip_email`, `org_handle`,
-  `org_name`, `org_descr`, and `org_email`).
+  `org_name`, `org_descr`, `org_email`, and `email`).
 
 RackRadar validates addresses embedded in RPSL organization/netblock attribute
 values, including remarks, notify, and e-mail values, and in ARIN
 organization/netblock comments. It stores only the lowercase domain and
 deduplicates domains case-insensitively. `org_email` searches domains associated
-with the organization, while `ip_email` searches those associated directly
-with the netblock. These filters use SQL `LIKE` patterns against domain names,
-so patterns must omit the `@` and local part; for example, use `example.com`
-for an exact domain or `%.example.com` for its subdomains. Reference-only
-contact handles, such as RPSL `abuse-c` and ARIN `pocLinks`, are not
-dereferenced.
+with the organization, `ip_email` searches those associated directly with the
+netblock, and the generic `email` filter searches either association. These
+filters use SQL `LIKE` patterns against domain names, so patterns must omit the
+`@` and local part; for example, use `example.com` for an exact domain or
+`%.example.com` for its subdomains. Reference-only contact handles, such as
+RPSL `abuse-c` and ARIN `pocLinks`, are not dereferenced.
 
 ### Example configuration
 
@@ -177,6 +177,11 @@ lists:
     org_email:
     {
       match : [ "example.com" ];
+      ignore: [];
+    };
+    email:
+    {
+      match : [ "%.example.com" ];
       ignore: [];
     };
   };

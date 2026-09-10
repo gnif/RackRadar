@@ -79,5 +79,11 @@ lists:
       match : [];
       ignore: [];
     };
+    email:
+    {
+      # Matches domains associated with either the organization or netblock.
+      match : [];
+      ignore: [];
+    };
   };
 };

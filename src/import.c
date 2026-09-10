@@ -1900,7 +1900,8 @@ typedef enum RRImportListEmailScope
 {
   RR_IMPORT_LIST_EMAIL_NONE,
   RR_IMPORT_LIST_EMAIL_ORG,
-  RR_IMPORT_LIST_EMAIL_IP
+  RR_IMPORT_LIST_EMAIL_IP,
+  RR_IMPORT_LIST_EMAIL_ANY
 }
 RRImportListEmailScope;
 
@@ -1981,6 +1982,29 @@ static bool db_list_query_add_email_condition(
         return false;
       break;
 
+    case RR_IMPORT_LIST_EMAIL_ANY:
+      if (!rr_buffer_appendf(query->sql,
+        "%s("
+          "EXISTS ("
+            "SELECT 1 FROM org_email_domain email_link "
+            "JOIN email_domain email "
+              "ON email.id = email_link.email_domain_id "
+            "WHERE email_link.org_id = org.id "
+              "AND email.domain LIKE ?"
+          ") OR EXISTS ("
+            "SELECT 1 FROM netblock_%s_email_domain email_link "
+            "JOIN email_domain email "
+              "ON email.id = email_link.email_domain_id "
+            "WHERE email_link.netblock_%s_id = ip.id "
+              "AND email.domain LIKE ?"
+          ")"
+        ")",
+        separator, query->ipVersion, query->ipVersion) ||
+        !db_list_query_add_param(query, value) ||
+        !db_list_query_add_param(query, value))
+        return false;
+      break;
+
     case RR_IMPORT_LIST_EMAIL_NONE:
       return false;
   }
@@ -2042,7 +2066,9 @@ static bool db_list_query_add_filters(
     db_list_query_add_filter(query, &cl->ip_descr, ignores,
       "ip.descr", RR_IMPORT_LIST_EMAIL_NONE, conditions) &&
     db_list_query_add_filter(query, &cl->ip_email, ignores,
-      NULL, RR_IMPORT_LIST_EMAIL_IP, conditions);
+      NULL, RR_IMPORT_LIST_EMAIL_IP, conditions) &&
+    db_list_query_add_filter(query, &cl->email, ignores,
+      NULL, RR_IMPORT_LIST_EMAIL_ANY, conditions);
 }
 
 static bool db_build_list_query_where(
@@ -3397,6 +3423,7 @@ static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE])
     rr_import_hash_list_filter(&ctx, &list->ip_netname);
     rr_import_hash_list_filter(&ctx, &list->ip_descr  );
     rr_import_hash_list_filter(&ctx, &list->ip_email  );
+    rr_import_hash_list_filter(&ctx, &list->email     );
   }
 
   rr_sha256_final(&ctx, digest);

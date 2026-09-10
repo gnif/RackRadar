@@ -254,6 +254,7 @@ bool rr_config_init(void)
     #define X(x, y) LOAD_FILTER(x ##_ ##y)
     CONFIG_LIST_FIELDS
     #undef X
+    LOAD_FILTER(email)
     #undef LOAD_FILTER
 
     ++list;
@@ -287,6 +288,8 @@ void rr_config_deinit(void)
       free(list->x ##_ ##y.ignore);
     CONFIG_LIST_FIELDS
     #undef X
+    free(list->email.match );
+    free(list->email.ignore);
   }
   free(g_config.lists);
 

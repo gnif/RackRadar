@@ -32,15 +32,16 @@ ConfigFilter;
 #define X(x, y) ConfigFilter x ##_ ##y;
 typedef struct ConfigList
 {
-  const char *name;
+  const char  *name;
   const char **sources;
   const char **include;
   const char **exclude;
-  const char *registrar;
-  bool build_list;
-  bool has_matches;
-  bool has_ignores;
-  bool include_seen;
+  const char  *registrar;
+  bool         build_list;
+  bool         has_matches;
+  bool         has_ignores;
+  bool         include_seen;
+  ConfigFilter email;
   CONFIG_LIST_FIELDS
 }
 ConfigList;
