@@ -85,6 +85,44 @@ static void rr_rpsl_copy_field(char *dst, size_t dstSz, const char *src)
   dst[len] = '\0';
 }
 
+static void rr_rpsl_extract_emails(
+  struct ProcessState *state, const char *line, size_t len)
+{
+  const char *value    = line;
+  size_t      valueLen = len;
+  char       *email;
+  size_t      emailSize;
+
+  switch(state->recordType)
+  {
+    case RECORD_TYPE_ORG:
+      email     = state->x.org.email;
+      emailSize = sizeof(state->x.org.email);
+      break;
+
+    case RECORD_TYPE_INETNUM:
+    case RECORD_TYPE_INET6NUM:
+      email     = state->x.inetnum.email;
+      emailSize = sizeof(state->x.inetnum.email);
+      break;
+
+    case RECORD_TYPE_IGNORE:
+      return;
+  }
+
+  if (line[0] != ' ' && line[0] != '\t' && line[0] != '+')
+  {
+    const char *separator = memchr(line, ':', len);
+    if (!separator)
+      return;
+
+    value    = separator + 1;
+    valueLen = len - (size_t)(value - line);
+  }
+
+  rr_email_extract(email, emailSize, value, valueLen);
+}
+
 static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *state)
 {
   if (len == 0)
@@ -158,6 +196,9 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
       return true;
   }
 
+  if (state->inRecord)
+    rr_rpsl_extract_emails(state, line, len);
+
   // if new record
   if (!state->inRecord)
   {
@@ -165,6 +206,12 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
     char *sp    = NULL;
     char *name  = __strtok_r(line, ":", &sp);
+    if (!name)
+    {
+      state->recordType = RECORD_TYPE_IGNORE;
+      return true;
+    }
+
     if (strcmp(name, "organisation") == 0)
       state->recordType = RECORD_TYPE_ORG;
     else if (strcmp(name, "inetnum" ) == 0)
@@ -275,6 +322,8 @@ static bool rr_rpsl_process_line(char * line, size_t len, struct ProcessState *s
 
   char *sp    = NULL;
   char *name  = __strtok_r(line, ":", &sp);
+  if (!name)
+    return true;
 
   char  *dst      = NULL;
   size_t dstSz;
@@ -424,11 +473,14 @@ static bool rr_rpsl_import_gzFILE(const char *registrar, gzFile gz,
   }
 
   if (ptr > line)
+  {
+    *ptr = '\0';
     if (!rr_rpsl_process_line((char *)line, (size_t)(ptr - line), &state))
     {
       LOG_ERROR("failed to process line");
       goto err_realloc;
     }
+  }
 
   if (!rr_rpsl_process_line("", 0, &state))
   {

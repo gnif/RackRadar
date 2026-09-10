@@ -30,6 +30,7 @@ void    rr_buffer_reset     (RRBuffer *buf);
 void    rr_buffer_free      (RRBuffer *buf);
 
 bool    rr_sanatize          (char *text, size_t maxLen);
+void    rr_email_extract     (char *dst, size_t dstSize, const char *text, size_t textSize);
 int     rr_parse_ipv4_decimal(const char *str, uint32_t *host);
 int     rr_parse_ipv6_decimal(const char *str, unsigned __int128 *host);
 uint8_t rr_ipv4_to_cidr      (const uint32_t start, const uint32_t end);

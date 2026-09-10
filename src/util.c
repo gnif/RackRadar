@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <ctype.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <unicode/ucsdet.h>
 #include <unicode/ucnv.h>
@@ -112,6 +113,149 @@ void rr_buffer_free(RRBuffer *buf)
   buf->buffer = NULL;
   buf->bufferSz = 0;
   buf->pos = 0;
+}
+
+static bool rr_email_is_alnum(char c)
+{
+  return
+    (c >= 'a' && c <= 'z') ||
+    (c >= 'A' && c <= 'Z') ||
+    (c >= '0' && c <= '9');
+}
+
+static bool rr_email_is_local_char(char c)
+{
+  return
+    rr_email_is_alnum(c) ||
+    c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+    c == '\'' || c == '*' || c == '+' || c == '-' || c == '/' ||
+    c == '=' || c == '?' || c == '^' || c == '_' || c == '`' ||
+    c == '{' || c == '|' || c == '}' || c == '~' || c == '.';
+}
+
+static bool rr_email_is_domain_char(char c)
+{
+  return rr_email_is_alnum(c) || c == '-' || c == '.';
+}
+
+static bool rr_email_is_token_char(char c)
+{
+  return rr_email_is_local_char(c) || rr_email_is_domain_char(c) || c == '@';
+}
+
+static bool rr_email_is_valid(const char *email, size_t at, size_t len)
+{
+  const size_t localLen  = at;
+  const size_t domainLen = len - at - 1;
+
+  if (localLen == 0 || localLen > 64 ||
+      domainLen == 0 || domainLen > 253 || len > 254)
+    return false;
+
+  if (email[0] == '.' || email[at - 1] == '.')
+    return false;
+
+  for(size_t i = 1; i < at; ++i)
+    if (email[i] == '.' && email[i - 1] == '.')
+      return false;
+
+  bool   sawDot     = false;
+  size_t labelStart = at + 1;
+  for(size_t i = labelStart; i <= len; ++i)
+  {
+    if (i < len && email[i] != '.')
+      continue;
+
+    const size_t labelLen = i - labelStart;
+    if (labelLen == 0 || labelLen > 63 ||
+        !rr_email_is_alnum(email[labelStart]) ||
+        !rr_email_is_alnum(email[i - 1]))
+      return false;
+
+    if (i < len)
+    {
+      sawDot     = true;
+      labelStart = i + 1;
+    }
+  }
+
+  return sawDot;
+}
+
+static bool rr_email_list_contains(
+  const char *list, size_t listLen, const char *email, size_t emailLen)
+{
+  size_t lineStart = 0;
+  for(size_t i = 0; i <= listLen; ++i)
+  {
+    if (i < listLen && list[i] != '\n')
+      continue;
+
+    const size_t lineLen = i - lineStart;
+    if (lineLen == emailLen &&
+        strncasecmp(list + lineStart, email, emailLen) == 0)
+      return true;
+
+    lineStart = i + 1;
+  }
+
+  return false;
+}
+
+static void rr_email_list_append(
+  char *dst, size_t dstSize, const char *email, size_t emailLen)
+{
+  if (!dst || dstSize == 0)
+    return;
+
+  const size_t dstLen = strnlen(dst, dstSize);
+  if (dstLen == dstSize ||
+      rr_email_list_contains(dst, dstLen, email, emailLen))
+    return;
+
+  const size_t separator = dstLen > 0 ? 1 : 0;
+  const size_t available = dstSize - dstLen;
+  if (separator + emailLen + 1 > available)
+    return;
+
+  size_t pos = dstLen;
+  if (separator)
+    dst[pos++] = '\n';
+
+  memcpy(dst + pos, email, emailLen);
+  dst[pos + emailLen] = '\0';
+}
+
+void rr_email_extract(
+  char *dst, size_t dstSize, const char *text, size_t textSize)
+{
+  if (!dst || dstSize == 0 || !text)
+    return;
+
+  for(size_t at = 0; at < textSize; ++at)
+  {
+    if (text[at] != '@')
+      continue;
+
+    size_t start = at;
+    while(start > 0 && rr_email_is_local_char(text[start - 1]))
+      --start;
+
+    size_t end = at + 1;
+    while(end < textSize && rr_email_is_domain_char(text[end]))
+      ++end;
+
+    const size_t tokenEnd = end;
+    while(end > at + 1 && text[end - 1] == '.')
+      --end;
+
+    if ((start > 0 && rr_email_is_token_char(text[start - 1])) ||
+        (tokenEnd < textSize && rr_email_is_token_char(text[tokenEnd])) ||
+        !rr_email_is_valid(text + start, at - start, end - start))
+      continue;
+
+    rr_email_list_append(dst, dstSize, text + start, end - start);
+  }
 }
 
 static size_t scrub_invalid_utf8_inplace(char *s, size_t cap)

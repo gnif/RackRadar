@@ -54,11 +54,42 @@ struct ProcessState
   char   *textPtr;
   size_t  textPtrSz;
 
+  bool    inEmail;
+  char    emailValue[512];
+
   bool    inComment;
   char   *commentPtr;
   size_t  commentPtrSz;
   size_t  commentPtrOff;
 };
+
+static void setup_email(struct ProcessState *state)
+{
+  state->emailValue[0] = '\0';
+  state->textPtr       = state->emailValue;
+  state->textPtrSz     = sizeof(state->emailValue);
+}
+
+static void save_emails(
+  struct ProcessState *state, const char *text, size_t textSize)
+{
+  switch(state->recordType)
+  {
+    case RECORD_TYPE_IGNORE:
+      break;
+
+    case RECORD_TYPE_ORG:
+      rr_email_extract(state->x.org.email, sizeof(state->x.org.email),
+        text, textSize);
+      break;
+
+    case RECORD_TYPE_NET:
+      rr_email_extract(state->x.inetnum.email,
+        sizeof(state->x.inetnum.email),
+        text, textSize);
+      break;
+  }
+}
 
 static void setup_comment(struct ProcessState *state)
 {
@@ -152,6 +183,15 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
     state->textPtr = state->b, state->textPtrSz = sizeof(state->b)
 
   struct ProcessState *state = userData;
+  if (state->level >= 2 && !state->inComment &&
+      (state->recordType == RECORD_TYPE_ORG ||
+       state->recordType == RECORD_TYPE_NET) &&
+      strcmp(name, "email") == 0)
+  {
+    state->inEmail = true;
+    setup_email(state);
+  }
+
   switch(state->level++)
   {
     case 0:
@@ -165,14 +205,16 @@ static void xml_on_start(void *userData, const char *name, const char **atts)
       break;
 
     case 1:
+      state->inEmail      = false;
+      state->inComment    = false;
+      state->inNetBlocks  = false;
+      state->inNetBlock   = false;
       if (strcmp(name, "org") == 0)
         state->recordType = RECORD_TYPE_ORG;
       else if (strcmp(name, "net") == 0)
       {
         state->recordType   = RECORD_TYPE_NET;
         state->nbAddrs      = 0;
-        state->inNetBlocks  = false;
-        state->inNetBlock   = false;
         state->ipVersion[0] = '\0';
       }
       else
@@ -261,6 +303,12 @@ static void xml_on_end(void *userData, const char *name)
 {
   struct ProcessState *state = userData;
 
+  if (state->inEmail && strcmp(name, "email") == 0)
+  {
+    save_emails(state, state->emailValue, strlen(state->emailValue));
+    state->inEmail = false;
+  }
+
   state->textPtr = NULL;
   switch(state->level--)
   {
@@ -332,6 +380,9 @@ static void xml_on_end(void *userData, const char *name)
       break;
 
     case 3:
+      if (state->inComment && strcmp(name, "comment") == 0)
+        save_emails(state, state->commentPtr, state->commentPtrOff);
+
       switch(state->recordType)
       {
         case RECORD_TYPE_IGNORE:
