@@ -356,6 +356,12 @@ bool rr_db_get(RRDBCon **out)
 
   if (*out && (*out)->is_reserved)
   {
+    if ((*out)->is_faulty)
+    {
+      pthread_mutex_unlock(&db.pool_lock);
+      return false;
+    }
+
     (*out)->in_use = true;
     pthread_mutex_unlock(&db.pool_lock);
     return true;
