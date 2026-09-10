@@ -31,6 +31,7 @@ add_executable(RackRadar
   src/main.c
   src/log.c
   src/util.c
+  src/sha256.c
   src/config.c
   src/download.c
   src/zip.c
