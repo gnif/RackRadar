@@ -22,21 +22,46 @@ static bool compile_regex(regex_t *re, const char *pattern)
     LOG_ERROR("regex compile failed: %s", errbuf);
     return false;
   }
+
+  regmatch_t match;
+  rc = regexec(re, "", 1, &match, 0);
+  if (rc == 0 && match.rm_so == match.rm_eo)
+  {
+    LOG_ERROR("regex must not match an empty string");
+    regfree(re);
+    return false;
+  }
+  if (rc != 0 && rc != REG_NOMATCH)
+  {
+    char errbuf[256];
+    regerror(rc, re, errbuf, sizeof(errbuf));
+    LOG_ERROR("regex validation failed: %s", errbuf);
+    regfree(re);
+    return false;
+  }
+
   return true;
 }
 
 static bool scan_regex_matches(regex_t *re, const char *content, bool v4, RRDBNetBlock *netblock)
 {
-  regmatch_t m[2];
+  regmatch_t  m[2];
   const char *cursor = content;
-  while (regexec(re, cursor, ARRAY_SIZE(m), m, 0) == 0)
+  int         rc     = REG_NOMATCH;
+  while (!rr_import_should_stop() &&
+         (rc = regexec(re, cursor, ARRAY_SIZE(m), m, 0)) == 0)
   {
     regmatch_t *match = &m[0];
     if (match->rm_so < 0 || match->rm_eo < match->rm_so)
       return false;
+    if (match->rm_so == match->rm_eo)
+    {
+      LOG_ERROR("regex produced an empty match");
+      return false;
+    }
 
     const char *str = cursor + match->rm_so;
-    size_t len = (size_t)(match->rm_eo - match->rm_so);
+    size_t      len = (size_t)(match->rm_eo - match->rm_so);
 
     char buffer[128];
     if (len >= sizeof(buffer))
@@ -49,8 +74,8 @@ static bool scan_regex_matches(regex_t *re, const char *content, bool v4, RRDBNe
     memcpy(buffer, str, len);
     buffer[len] = '\0';
 
-    char *savePtr = NULL;
-    const char *addr = strtok_r(buffer, "/", &savePtr);
+    char       *savePtr = NULL;
+    const char *addr    = strtok_r(buffer, "/", &savePtr);
     if (!addr)
     {
       cursor += m[0].rm_eo;
@@ -108,6 +133,16 @@ static bool scan_regex_matches(regex_t *re, const char *content, bool v4, RRDBNe
     cursor += m[0].rm_eo;
   }
 
+  if (rr_import_should_stop())
+    return false;
+  if (rc != REG_NOMATCH)
+  {
+    char errbuf[256];
+    regerror(rc, re, errbuf, sizeof(errbuf));
+    LOG_ERROR("regex execution failed: %s", errbuf);
+    return false;
+  }
+
   return true;
 }
 
@@ -115,6 +150,9 @@ bool rr_regex_import_FILE(const char *registrar, FILE *fp,
   unsigned registrar_id, unsigned new_serial,
   const char *extra_v4, const char *extra_v6)
 {
+  if (rr_import_should_stop())
+    return false;
+
   if (fseek(fp, 0, SEEK_END) != 0)
   {
     LOG_ERROR("failed to seek REGEX source");
@@ -155,7 +193,7 @@ bool rr_regex_import_FILE(const char *registrar, FILE *fp,
     .serial       = new_serial
   };
 
-  bool ret = true;
+  bool    ret = true;
   regex_t re_v4, re_v6;
 
   if (!extra_v4)
@@ -176,5 +214,5 @@ bool rr_regex_import_FILE(const char *registrar, FILE *fp,
   }
 
   free(content);
-  return ret;
+  return ret && !rr_import_should_stop();
 }

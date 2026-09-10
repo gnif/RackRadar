@@ -2121,6 +2121,11 @@ void rr_import_stop(void)
   s_import_stop_requested = 1;
 }
 
+bool rr_import_should_stop(void)
+{
+  return s_import_stop_requested != 0;
+}
+
 static bool rr_emit_ipv4_range_as_cidrs(unsigned list_id, uint32_t start, uint32_t end)
 {
   uint64_t cur = (uint64_t)start;
