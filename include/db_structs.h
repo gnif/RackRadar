@@ -39,6 +39,7 @@ typedef struct RRDBOrg
   char     handle[32];
   char     name  [1024];
   char     descr [8192];
+  char     email [8192];
 }
 RRDBOrg;
 
@@ -59,6 +60,7 @@ typedef struct RRDBNetBlock
   uint8_t  prefixLen;
   char     netname[256 ];
   char     descr  [8192];
+  char     email  [8192];
 }
 RRDBNetBlock;
 

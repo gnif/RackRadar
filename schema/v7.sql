@@ -1,0 +1,29 @@
+ALTER TABLE org
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;
+
+ALTER TABLE org_stage
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;
+
+ALTER TABLE netblock_v4
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;
+
+ALTER TABLE netblock_v4_stage
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;
+
+ALTER TABLE netblock_v6
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;
+
+ALTER TABLE netblock_v6_stage
+  ADD COLUMN email TEXT NULL AFTER descr,
+  ALGORITHM = INPLACE,
+  LOCK      = NONE;

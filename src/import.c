@@ -459,20 +459,24 @@ DEFAULT_STMT(RRImport, org_insert,
     "registrar_id, "
     "handle, "
     "name, "
-    "descr"
+    "descr, "
+    "email"
   ") VALUES ("
+    "?,"
     "?,"
     "?,"
     "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
     "name   = VALUES(name), "
-    "descr  = VALUES(descr)",
+    "descr  = VALUES(descr), "
+    "email  = VALUES(email)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.handle       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.name         },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
 );
 
 DEFAULT_STMT(RRImport, org_stage_truncate,
@@ -480,8 +484,8 @@ DEFAULT_STMT(RRImport, org_stage_truncate,
 );
 
 DEFAULT_STMT(RRImport, org_merge_insert,
-  "INSERT INTO org (registrar_id, serial, handle, name, descr) "
-  "SELECT s.registrar_id, ?, s.handle, s.name, s.descr "
+  "INSERT INTO org (registrar_id, serial, handle, name, descr, email) "
+  "SELECT s.registrar_id, ?, s.handle, s.name, s.descr, s.email "
   "FROM org_stage s "
   "LEFT JOIN org o "
     "ON o.registrar_id = s.registrar_id "
@@ -496,11 +500,12 @@ DEFAULT_STMT(RRImport, org_merge_update,
   "JOIN org_stage s "
     "ON s.registrar_id = o.registrar_id "
     "AND s.handle = o.handle "
-  "SET o.serial = ?, o.name = s.name, o.descr = s.descr "
+  "SET o.serial = ?, o.name = s.name, o.descr = s.descr, o.email = s.email "
   "WHERE o.registrar_id = ? "
   "AND ("
     "NOT (CAST(o.name AS BINARY) <=> CAST(s.name AS BINARY)) OR "
-    "NOT (CAST(o.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+    "NOT (CAST(o.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
+    "NOT (CAST(o.email AS BINARY) <=> CAST(s.email AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -523,8 +528,10 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
     "end_ip, "
     "prefix_len, "
     "netname, "
-    "descr"
+    "descr, "
+    "email"
   ") VALUES ("
+    "?,"
     "?,"
     "?,"
     "?,"
@@ -535,7 +542,8 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
   ") ON DUPLICATE KEY UPDATE "
     "prefix_len = VALUES(prefix_len), "
     "netname = VALUES(netname), "
-    "descr   = VALUES(descr)",
+    "descr   = VALUES(descr), "
+    "email   = VALUES(email)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
@@ -543,7 +551,8 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.endAddr  .v4 },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.netname      },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
 );
 
 DEFAULT_STMT(RRImport, netblockv4_stage_truncate,
@@ -552,10 +561,10 @@ DEFAULT_STMT(RRImport, netblockv4_stage_truncate,
 
 DEFAULT_STMT(RRImport, netblockv4_merge_insert,
   "INSERT INTO netblock_v4 ("
-    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
   ") "
   "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
-    "s.prefix_len, s.netname, s.descr "
+    "s.prefix_len, s.netname, s.descr, s.email "
   "FROM netblock_v4_stage s "
   "LEFT JOIN netblock_v4 nb "
     "ON nb.registrar_id = s.registrar_id "
@@ -578,12 +587,14 @@ DEFAULT_STMT(RRImport, netblockv4_merge_update,
     "nb.serial = ?, "
     "nb.prefix_len = s.prefix_len, "
     "nb.netname = s.netname, "
-    "nb.descr = s.descr "
+    "nb.descr = s.descr, "
+    "nb.email = s.email "
   "WHERE nb.registrar_id = ? "
   "AND ("
     "nb.prefix_len != s.prefix_len OR "
     "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
-    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
+    "NOT (CAST(nb.email AS BINARY) <=> CAST(s.email AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -622,8 +633,10 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
     "end_ip, "
     "prefix_len, "
     "netname, "
-    "descr"
+    "descr, "
+    "email"
   ") VALUES ("
+    "?,"
     "?,"
     "?,"
     "?,"
@@ -634,7 +647,8 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
   ") ON DUPLICATE KEY UPDATE "
     "prefix_len = VALUES(prefix_len), "
     "netname = VALUES(netname), "
-    "descr   = VALUES(descr)",
+    "descr   = VALUES(descr), "
+    "email   = VALUES(email)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
@@ -642,7 +656,8 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
   &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.endAddr  .v6, .size = sizeof(this->in.endAddr  ) },
   &(RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &this->in.prefixLen    },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.netname      },
-  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.email        }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_stage_truncate,
@@ -651,10 +666,10 @@ DEFAULT_STMT(RRImport, netblockv6_stage_truncate,
 
 DEFAULT_STMT(RRImport, netblockv6_merge_insert,
   "INSERT INTO netblock_v6 ("
-    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
   ") "
   "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
-    "s.prefix_len, s.netname, s.descr "
+    "s.prefix_len, s.netname, s.descr, s.email "
   "FROM netblock_v6_stage s "
   "LEFT JOIN netblock_v6 nb "
     "ON nb.registrar_id = s.registrar_id "
@@ -677,12 +692,14 @@ DEFAULT_STMT(RRImport, netblockv6_merge_update,
     "nb.serial = ?, "
     "nb.prefix_len = s.prefix_len, "
     "nb.netname = s.netname, "
-    "nb.descr = s.descr "
+    "nb.descr = s.descr, "
+    "nb.email = s.email "
   "WHERE nb.registrar_id = ? "
   "AND ("
     "nb.prefix_len != s.prefix_len OR "
     "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
-    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY)) OR "
+    "NOT (CAST(nb.email AS BINARY) <=> CAST(s.email AS BINARY))"
   ")",
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
@@ -1571,16 +1588,16 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
 static RRDBStmt *rr_import_prepare_org_batch(RRDBCon *con)
 {
   RRBuffer  sql = { 0 };
-  RRDBParam params[RR_IMPORT_BATCH_ROWS * 4];
+  RRDBParam params[RR_IMPORT_BATCH_ROWS * 5];
   size_t    param = 0;
 
   if (rr_buffer_append_str(&sql,
-    "INSERT INTO org_stage (registrar_id, handle, name, descr) VALUES ") < 0)
+    "INSERT INTO org_stage (registrar_id, handle, name, descr, email) VALUES ") < 0)
     goto fail;
 
   for(size_t i = 0; i < RR_IMPORT_BATCH_ROWS; ++i)
   {
-    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?)", i == 0 ? "" : ","))
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?, ?)", i == 0 ? "" : ","))
       goto fail;
 
     RRDBOrg *row = &s_import.batch.org.rows[i];
@@ -1588,10 +1605,12 @@ static RRDBStmt *rr_import_prepare_org_batch(RRDBCon *con)
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->handle       };
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->name         };
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr        };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->email        };
   }
 
   if (rr_buffer_append_str(&sql,
-    " ON DUPLICATE KEY UPDATE name = VALUES(name), descr = VALUES(descr)") < 0)
+    " ON DUPLICATE KEY UPDATE "
+      "name = VALUES(name), descr = VALUES(descr), email = VALUES(email)") < 0)
     goto fail;
 
   RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
@@ -1608,19 +1627,19 @@ fail:
 static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
 {
   RRBuffer  sql = { 0 };
-  RRDBParam params[RR_IMPORT_BATCH_ROWS * 7];
+  RRDBParam params[RR_IMPORT_BATCH_ROWS * 8];
   size_t    param = 0;
 
   if (!rr_buffer_appendf(&sql,
     "INSERT INTO netblock_%s_stage ("
-      "registrar_id, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+      "registrar_id, org_handle, start_ip, end_ip, prefix_len, netname, descr, email"
     ") VALUES ",
     ipv6 ? "v6" : "v4"))
     goto fail;
 
   for(size_t i = 0; i < RR_IMPORT_BATCH_ROWS; ++i)
   {
-    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?, ?, ?, ?)", i == 0 ? "" : ","))
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?, ?, ?, ?, ?)", i == 0 ? "" : ","))
       goto fail;
 
     RRDBNetBlock *row = ipv6
@@ -1652,13 +1671,15 @@ static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &row->prefixLen };
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->netname   };
     params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr     };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->email     };
   }
 
   if (rr_buffer_append_str(&sql,
     " ON DUPLICATE KEY UPDATE "
       "prefix_len = VALUES(prefix_len), "
       "netname = VALUES(netname), "
-      "descr = VALUES(descr)") < 0)
+      "descr = VALUES(descr), "
+      "email = VALUES(email)") < 0)
     goto fail;
 
   RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
