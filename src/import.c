@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <signal.h>
 
 #define RR_IMPORT_BATCH_ROWS            64
 #define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
@@ -124,6 +125,7 @@ typedef struct RRImport
   RRDBStatistics          stats;
   RRImportBatch           batch;
   RRImportListUnionBatch  listUnionBatch;
+  bool                    lockHeld;
 
   STMT_STRUCT(registrar_insert,
     char in_name[32];
@@ -157,7 +159,9 @@ typedef struct RRImport
     uint8_t out_acquired;
   );
 
-  STMT_STRUCT(import_lock_release,);
+  STMT_STRUCT(import_lock_release,
+    uint8_t out_released;
+  );
 
   STMT_STRUCT(org_insert,
     RRDBOrg in;
@@ -281,6 +285,7 @@ typedef struct RRImport
 }
 RRImport;
 RRImport s_import = { 0 };
+static volatile sig_atomic_t s_import_running;
 
 static void rr_import_list_config_hash(char out_hash[RR_SHA256_HEX_SIZE]);
 
@@ -444,7 +449,9 @@ DEFAULT_STMT(RRImport, import_lock_acquire,
 );
 
 DEFAULT_STMT(RRImport, import_lock_release,
-  "DO RELEASE_LOCK(SHA2(CONCAT('RackRadar:import:', DATABASE()), 256))"
+  "SELECT COALESCE(RELEASE_LOCK(SHA2(CONCAT('RackRadar:import:', DATABASE()), 256)), 0)",
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_released }
 );
 
 DEFAULT_STMT(RRImport, org_insert,
@@ -1055,6 +1062,9 @@ static bool rr_import_batches_flush(void)
 
 bool rr_import_org_insert(RRDBOrg *in_org)
 {
+  if (!s_import_running)
+    return false;
+
   if (s_import.batch.org.count >= RR_IMPORT_BATCH_ROWS)
   {
     LOG_ERROR("organization staging batch overflow");
@@ -1098,6 +1108,9 @@ static bool rr_import_org_delete_old(unsigned in_registrar_id)
 
 bool rr_import_netblockv4_insert(RRDBNetBlock *in_netblock)
 {
+  if (!s_import_running)
+    return false;
+
   if (s_import.batch.ipv4.count >= RR_IMPORT_BATCH_ROWS)
   {
     LOG_ERROR("IPv4 staging batch overflow");
@@ -1148,6 +1161,9 @@ static bool rr_import_netblockv4_link_org(
 
 bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
 {
+  if (!s_import_running)
+    return false;
+
   if (s_import.batch.ipv6.count >= RR_IMPORT_BATCH_ROWS)
   {
     LOG_ERROR("IPv6 staging batch overflow");
@@ -1396,6 +1412,9 @@ static bool rr_import_list_union_batches_flush(void)
 
 static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned in_ip, uint8_t in_prefix_len)
 {
+  if (!s_import_running)
+    return false;
+
   if (s_import.listUnionBatch.ipv4.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
   {
     LOG_ERROR("IPv4 list union batch overflow");
@@ -1416,6 +1435,9 @@ static bool rr_import_netblockv4_list_union_insert(unsigned in_list_id, unsigned
 
 static bool rr_import_netblockv6_list_union_insert(unsigned in_list_id, unsigned __int128 in_ip, uint8_t in_prefix_len)
 {
+  if (!s_import_running)
+    return false;
+
   if (s_import.listUnionBatch.ipv6.count >= RR_IMPORT_LIST_UNION_BATCH_ROWS)
   {
     LOG_ERROR("IPv6 list union batch overflow");
@@ -1746,10 +1768,14 @@ static void rr_import_list_union_batches_free(void)
 
 static bool rr_import_lock_acquire(void)
 {
+  s_import.lockHeld                         = false;
   s_import.import_lock_acquire.out_acquired = 0;
-  int rc = rr_db_stmt_fetch_one(s_import.import_lock_acquire.stmt);
+  const int rc = rr_db_stmt_fetch_one(s_import.import_lock_acquire.stmt);
   if (rc == 1 && s_import.import_lock_acquire.out_acquired != 0)
+  {
+    s_import.lockHeld = true;
     return true;
+  }
 
   LOG_ERROR("another RackRadar importer owns the database import lock");
   return false;
@@ -1757,9 +1783,18 @@ static bool rr_import_lock_acquire(void)
 
 static void rr_import_lock_release(void)
 {
-  if (s_import.import_lock_release.stmt &&
-      !rr_db_stmt_execute(s_import.import_lock_release.stmt, NULL))
+  if (!s_import.lockHeld)
+    return;
+
+  s_import.import_lock_release.out_released = 0;
+  const int rc = rr_db_stmt_fetch_one(s_import.import_lock_release.stmt);
+  if (rc != 1 || s_import.import_lock_release.out_released == 0)
+  {
     LOG_ERROR("failed to release the database import lock");
+    return;
+  }
+
+  s_import.lockHeld = false;
 }
 
 static bool db_init_fn(RRDBCon *con, void **udata)
@@ -1886,18 +1921,29 @@ static bool db_deinit_fn(RRDBCon *con, void **udata)
   return true;
 }
 
+static bool rr_import_download_cancel(void *opaque)
+{
+  (void)opaque;
+  return !s_import_running;
+}
+
 bool rr_import_init(void)
 {
+  s_import_running  = 1;
+  s_import.lockHeld = false;
+
   if (!rr_download_init(&s_import.dl))
   {
     LOG_ERROR("rr_download_init failed");
     return false;
   }
+  rr_download_set_cancel(s_import.dl, rr_import_download_cancel, NULL);
 
   // reserve a connection for imports only
   if (!rr_db_reserve(&s_import.con, db_init_fn, db_deinit_fn))
   {
     LOG_ERROR("rr_db_reserve failed");
+    rr_download_deinit(&s_import.dl);
     return false;
   }
 
@@ -1906,8 +1952,14 @@ bool rr_import_init(void)
 
 void rr_import_deinit(void)
 {
+  s_import_running = 0;
   rr_db_release(&s_import.con);
   rr_download_deinit(&s_import.dl);
+}
+
+void rr_import_stop(void)
+{
+  s_import_running = 0;
 }
 
 static bool rr_emit_ipv4_range_as_cidrs(unsigned list_id, uint32_t start, uint32_t end)
@@ -2485,6 +2537,9 @@ static RRImportList *rr_import_list_find(const char *name)
 
 static bool rr_import_build_list(RRDBCon *con, RRImportList *list)
 {
+  if (!s_import_running)
+    return false;
+
   if (list->state == RR_IMPORT_LIST_BUILT)
     return true;
 
@@ -2593,6 +2648,9 @@ static bool rr_import_build_lists_internal(RRDBCon *con)
 
 bool rr_import_build_lists(void)
 {
+  if (!s_import_running)
+    return false;
+
   RRDBCon *con = s_import.con;
   if (!rr_db_get(&con))
   {
@@ -2797,7 +2855,7 @@ bool rr_import_run(void)
   bool rebuild_unions = false;
   bool rebuild_lists  = true;
   bool check_unions    = true;
-  while(true)
+  while(s_import_running)
   {
     RRDBCon *con = s_import.con;
     if (!rr_db_get(&con))
@@ -2817,7 +2875,7 @@ bool rr_import_run(void)
       check_unions = false;
     }
 
-    for(unsigned i = 0; i < g_config.nbSources; ++i)
+    for(unsigned i = 0; s_import_running && i < g_config.nbSources; ++i)
     {
       typeof(*g_config.sources) *src = &g_config.sources[i];
       if (src->type == SOURCE_TYPE_INVALID)
@@ -2878,6 +2936,14 @@ bool rr_import_run(void)
           &response);
       rr_import_log_timing("fetch", src->name, fetchStarted);
 
+      if (downloadResult == RR_DOWNLOAD_RESULT_CANCELLED ||
+          !s_import_running)
+      {
+        if (fp)
+          fclose(fp);
+        break;
+      }
+
       if (downloadResult == RR_DOWNLOAD_RESULT_ERROR)
       {
         LOG_ERROR("failed fetch for %s", src->name);
@@ -2908,6 +2974,12 @@ bool rr_import_run(void)
       const bool     hashSucceeded =
         rr_import_source_content_hash(fp, contentHash);
       rr_import_log_timing("hash", src->name, hashStarted);
+      if (!s_import_running)
+      {
+        fclose(fp);
+        break;
+      }
+
       if (!hashSucceeded)
       {
         fclose(fp);
@@ -3113,6 +3185,12 @@ log_result:
       LOG_INFO("  Deleted  : %llu", s_import.stats.deletedIPv6  );
     }
 
+    if (!s_import_running)
+    {
+      rr_db_put(&con);
+      break;
+    }
+
     if (rebuild_unions)
     {
       const uint64_t buildStarted = rr_microtime();
@@ -3154,6 +3232,9 @@ log_result:
       rebuild_lists = false;
 
     rr_db_put(&con);
+    if (!s_import_running)
+      break;
+
     usleep(1000000);
     continue;
 
@@ -3162,7 +3243,8 @@ fail_con:
 fail:
     check_unions   = true;
     rebuild_lists  = true;
-    usleep(1000000);
+    if (s_import_running)
+      usleep(1000000);
   }
 
   return true;

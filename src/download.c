@@ -8,10 +8,25 @@
 
 struct RRDownload
 {
-  CURL *ch;
-  char errBuf[CURL_ERROR_SIZE];
-  char authBuf[128];
+  CURL               *ch;
+  char                errBuf[CURL_ERROR_SIZE];
+  char                authBuf[128];
+  RRDownloadCancelFn  cancelFn;
+  void               *cancelOpaque;
 };
+
+static int rr_download_xfer_info(void *opaque, curl_off_t downloadTotal,
+  curl_off_t downloadNow, curl_off_t uploadTotal, curl_off_t uploadNow)
+{
+  RRDownload *h = opaque;
+
+  (void)downloadTotal;
+  (void)downloadNow;
+  (void)uploadTotal;
+  (void)uploadNow;
+
+  return h->cancelFn && h->cancelFn(h->cancelOpaque);
+}
 
 bool rr_download_init(RRDownload **ph)
 {
@@ -36,12 +51,15 @@ bool rr_download_init(RRDownload **ph)
     return false;
   }
 
-  curl_easy_setopt(h->ch, CURLOPT_FOLLOWLOCATION, 1L       );
-  curl_easy_setopt(h->ch, CURLOPT_FAILONERROR   , 1L       );
-  curl_easy_setopt(h->ch, CURLOPT_WRITEFUNCTION , NULL     );
-  curl_easy_setopt(h->ch, CURLOPT_ERRORBUFFER   , h->errBuf);
-  curl_easy_setopt(h->ch, CURLOPT_CONNECTTIMEOUT, 15L      );
-  curl_easy_setopt(h->ch, CURLOPT_TIMEOUT       , 0L       );
+  curl_easy_setopt(h->ch, CURLOPT_FOLLOWLOCATION  , 1L                   );
+  curl_easy_setopt(h->ch, CURLOPT_FAILONERROR     , 1L                   );
+  curl_easy_setopt(h->ch, CURLOPT_WRITEFUNCTION   , NULL                 );
+  curl_easy_setopt(h->ch, CURLOPT_ERRORBUFFER     , h->errBuf            );
+  curl_easy_setopt(h->ch, CURLOPT_CONNECTTIMEOUT  , 15L                  );
+  curl_easy_setopt(h->ch, CURLOPT_TIMEOUT         , 0L                   );
+  curl_easy_setopt(h->ch, CURLOPT_NOPROGRESS      , 0L                   );
+  curl_easy_setopt(h->ch, CURLOPT_XFERINFOFUNCTION, rr_download_xfer_info);
+  curl_easy_setopt(h->ch, CURLOPT_XFERINFODATA    , h                    );
 
   *ph = h;
   return true;
@@ -71,6 +89,13 @@ void rr_download_clear_auth(RRDownload *h)
   memset(h->authBuf, 0, sizeof(h->authBuf));
   curl_easy_setopt(h->ch, CURLOPT_USERPWD , NULL);
   curl_easy_setopt(h->ch, CURLOPT_HTTPAUTH, CURLAUTH_NONE);
+}
+
+void rr_download_set_cancel(RRDownload *h, RRDownloadCancelFn cancelFn,
+  void *opaque)
+{
+  h->cancelFn     = cancelFn;
+  h->cancelOpaque = opaque;
 }
 
 static bool rr_download_add_validator(struct curl_slist **headers,
@@ -236,8 +261,11 @@ static RRDownloadResult rr_download(RRDownload *h, const char *url, FILE *fp,
   cc = curl_easy_perform(h->ch);
   if (cc != CURLE_OK)
   {
-    LOG_ERROR("curl_easy_perform: %s",
-      h->errBuf[0] ? h->errBuf : curl_easy_strerror(cc));
+    if (cc == CURLE_ABORTED_BY_CALLBACK)
+      result = RR_DOWNLOAD_RESULT_CANCELLED;
+    else
+      LOG_ERROR("curl_easy_perform: %s",
+        h->errBuf[0] ? h->errBuf : curl_easy_strerror(cc));
     goto cleanup;
   }
 

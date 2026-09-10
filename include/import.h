@@ -5,8 +5,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-bool rr_import_init(void);
+bool rr_import_init  (void);
 void rr_import_deinit(void);
+void rr_import_stop  (void);
 
 // only used at startup, do not call after rr_import_run has started!
 bool rr_import_build_lists(void);
