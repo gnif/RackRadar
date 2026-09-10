@@ -16,7 +16,7 @@
 #define RR_IMPORT_BATCH_ROWS            64
 #define RR_IMPORT_LIST_UNION_BATCH_ROWS 256
 #define RR_IMPORT_LIST_VERSION          "RackRadar-list-builder-v2"
-#define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v2"
+#define RR_IMPORT_PARSER_VERSION        "RackRadar-source-parser-v3"
 
 typedef struct RRImportSourceState
 {
