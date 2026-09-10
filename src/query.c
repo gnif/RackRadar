@@ -426,7 +426,7 @@ int rr_query_netblockv4_list_union_fetch(RRDBCon *con, uint32_t *out_ip, uint8_t
 void rr_query_netblockv4_list_union_end(RRDBCon *con)
 {
   DBQueryData *qd = rr_db_get_con_gudata(con);
-  rr_db_stmt_close(qd->netblock_v4_list.stmt);
+  rr_db_stmt_close(qd->netblock_v4_list_union.stmt);
 }
 #pragma endregion
 
