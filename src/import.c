@@ -2606,8 +2606,11 @@ bool rr_import_build_lists(void)
 
 static void rr_import_hash_config_value(RRSHA256 *ctx, const char *value)
 {
-  const char *safe = value ? value : "";
-  rr_sha256_update(ctx, safe, strlen(safe) + 1);
+  const uint8_t present = value ? 1 : 0;
+
+  rr_sha256_update(ctx, &present, sizeof(present));
+  if (value)
+    rr_sha256_update(ctx, value, strlen(value) + 1);
 }
 
 static void rr_import_hash_list_value(RRSHA256 *ctx, const char *value)
