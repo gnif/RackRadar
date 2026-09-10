@@ -50,8 +50,9 @@ The resulting executable `RackRadar` is produced in the `build/` directory.
 
 ## Database setup
 
-RackRadar expects a MariaDB/MySQL database. Create a database and user, then
-apply the schema:
+RackRadar expects a MariaDB/MySQL database. For a fresh installation, create a
+database and user, then apply `schema/v1.sql`. The v1 schema contains the full
+current schema; fresh installations do not apply the migration files:
 
 ```bash
 mysql -u <user> -p -e "CREATE DATABASE rackradar CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -62,10 +63,13 @@ The schema defines tables for registrars, organizations, IPv4/IPv6 netblocks,
 union tables for merged ranges, and list management tables.【F:schema/v1.sql†L1-L200】【F:schema/v1.sql†L200-L232】
 
 Existing installations must apply each newer schema migration in order before
-starting the matching RackRadar binary. For example, to upgrade a v1 database:
+starting the matching RackRadar binary. For example, upgrading a v1 database
+to the current schema requires both migrations; an existing v2 database only
+requires `schema/v3.sql`:
 
 ```bash
 mysql -u <user> -p rackradar < schema/v2.sql
+mysql -u <user> -p rackradar < schema/v3.sql
 ```
 
 ## Configuration

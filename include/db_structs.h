@@ -6,13 +6,19 @@
 typedef struct RRDBStatistics
 {
   unsigned long long
+    processedOrgs,
     newOrgs,
+    updatedOrgs,
     deletedOrgs,
 
+    processedIPv4,
     newIPv4,
+    updatedIPv4,
     deletedIPv4,
 
+    processedIPv6,
     newIPv6,
+    updatedIPv6,
     deletedIPv6;
 }
 RRDBStatistics;

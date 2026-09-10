@@ -11,11 +11,42 @@
 #include <stdlib.h>
 #include <assert.h>
 
+#define RR_IMPORT_BATCH_ROWS 64
+
+typedef struct RRImportBatch
+{
+  struct
+  {
+    RRDBStmt *stmt;
+    RRDBOrg   rows[RR_IMPORT_BATCH_ROWS];
+    size_t    count;
+  }
+  org;
+
+  struct
+  {
+    RRDBStmt      *stmt;
+    RRDBNetBlock   rows[RR_IMPORT_BATCH_ROWS];
+    size_t         count;
+  }
+  ipv4;
+
+  struct
+  {
+    RRDBStmt      *stmt;
+    RRDBNetBlock   rows[RR_IMPORT_BATCH_ROWS];
+    size_t         count;
+  }
+  ipv6;
+}
+RRImportBatch;
+
 typedef struct RRImport
 {
   RRDownload    *dl;
   RRDBCon       *con;
   RRDBStatistics stats;
+  RRImportBatch  batch;
 
   STMT_STRUCT(registrar_insert,
     char in_name[32];
@@ -26,41 +57,85 @@ typedef struct RRImport
     unsigned in_serial;
   );
 
+  STMT_STRUCT(registrar_lock,
+    char     in_name[32];
+    unsigned out_registrar_id;
+    unsigned out_serial;
+    unsigned out_last_import;
+  );
+
+  STMT_STRUCT(import_lock_acquire,
+    uint8_t out_acquired;
+  );
+
+  STMT_STRUCT(import_lock_release,);
+
   STMT_STRUCT(org_insert,
     RRDBOrg in;
   );
 
+  STMT_STRUCT(org_stage_truncate,);
+
+  STMT_STRUCT(org_merge_insert,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(org_merge_update,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
   STMT_STRUCT(org_delete_old,
     unsigned in_registrar_id;
-    unsigned in_serial;
   );
 
   STMT_STRUCT(netblockv4_insert,
     RRDBNetBlock in;
   );
 
+  STMT_STRUCT(netblockv4_stage_truncate,);
+
+  STMT_STRUCT(netblockv4_merge_insert,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv4_merge_update,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
   STMT_STRUCT(netblockv4_delete_old,
     unsigned in_registrar_id;
-    unsigned in_serial;
   );
 
   STMT_STRUCT(netblockv4_link_org,
     unsigned in_registrar_id;
-    unsigned in_serial;
   );
 
   STMT_STRUCT(netblockv6_insert,
     RRDBNetBlock in;
   );
 
+  STMT_STRUCT(netblockv6_stage_truncate,);
+
+  STMT_STRUCT(netblockv6_merge_insert,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
+  STMT_STRUCT(netblockv6_merge_update,
+    unsigned in_serial;
+    unsigned in_registrar_id;
+  );
+
   STMT_STRUCT(netblockv6_delete_old,
     unsigned in_registrar_id;
-    unsigned in_serial;
   );
 
   STMT_STRUCT(netblockv6_link_org,
     unsigned in_registrar_id;
-    unsigned in_serial;
   );
 
   STMT_STRUCT(unions_dirty_get,
@@ -114,12 +189,24 @@ RRImport s_import = { 0 };
 #define STATEMENTS(X) \
   X(registrar_insert              ) \
   X(registrar_update_serial       ) \
+  X(registrar_lock                ) \
+  X(import_lock_acquire           ) \
+  X(import_lock_release           ) \
   X(org_insert                    ) \
+  X(org_stage_truncate            ) \
+  X(org_merge_insert              ) \
+  X(org_merge_update              ) \
   X(org_delete_old                ) \
   X(netblockv4_insert             ) \
+  X(netblockv4_stage_truncate     ) \
+  X(netblockv4_merge_insert       ) \
+  X(netblockv4_merge_update       ) \
   X(netblockv4_delete_old         ) \
   X(netblockv4_link_org           ) \
   X(netblockv6_insert             ) \
+  X(netblockv6_stage_truncate     ) \
+  X(netblockv6_merge_insert       ) \
+  X(netblockv6_merge_update       ) \
   X(netblockv6_delete_old         ) \
   X(netblockv6_link_org           ) \
   X(unions_dirty_get              ) \
@@ -153,10 +240,28 @@ DEFAULT_STMT(RRImport, registrar_update_serial,
   &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
+DEFAULT_STMT(RRImport, registrar_lock,
+  "SELECT id, serial, last_import FROM registrar WHERE name = ? FOR UPDATE",
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_registrar_id },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out_last_import  }
+);
+
+DEFAULT_STMT(RRImport, import_lock_acquire,
+  "SELECT COALESCE(GET_LOCK(SHA2(CONCAT('RackRadar:import:', DATABASE()), 256), 0), 0)",
+  RRDB_PARAM_OUT,
+  &(RRDBParam){ .type = RRDB_TYPE_UINT8, .bind = &this->out_acquired }
+);
+
+DEFAULT_STMT(RRImport, import_lock_release,
+  "DO RELEASE_LOCK(SHA2(CONCAT('RackRadar:import:', DATABASE()), 256))"
+);
+
 DEFAULT_STMT(RRImport, org_insert,
-  "INSERT INTO org ("
+  "INSERT INTO org_stage ("
     "registrar_id, "
-    "serial, "
     "handle, "
     "name, "
     "descr"
@@ -164,30 +269,60 @@ DEFAULT_STMT(RRImport, org_insert,
     "?,"
     "?,"
     "?,"
-    "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "serial = VALUES(serial), "
     "name   = VALUES(name), "
     "descr  = VALUES(descr)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT,   .bind = &this->in.serial       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.handle       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.name         },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
 );
 
+DEFAULT_STMT(RRImport, org_stage_truncate,
+  "TRUNCATE TABLE org_stage"
+);
+
+DEFAULT_STMT(RRImport, org_merge_insert,
+  "INSERT INTO org (registrar_id, serial, handle, name, descr) "
+  "SELECT s.registrar_id, ?, s.handle, s.name, s.descr "
+  "FROM org_stage s "
+  "LEFT JOIN org o "
+    "ON o.registrar_id = s.registrar_id "
+    "AND o.handle = s.handle "
+  "WHERE s.registrar_id = ? AND o.id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, org_merge_update,
+  "UPDATE org o "
+  "JOIN org_stage s "
+    "ON s.registrar_id = o.registrar_id "
+    "AND s.handle = o.handle "
+  "SET o.serial = ?, o.name = s.name, o.descr = s.descr "
+  "WHERE o.registrar_id = ? "
+  "AND ("
+    "NOT (CAST(o.name AS BINARY) <=> CAST(s.name AS BINARY)) OR "
+    "NOT (CAST(o.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+  ")",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
 DEFAULT_STMT(RRImport, org_delete_old,
-  "DELETE FROM org WHERE registrar_id = ? AND serial != ?",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
+  "DELETE o FROM org o "
+  "LEFT JOIN org_stage s "
+    "ON s.registrar_id = o.registrar_id "
+    "AND s.handle = o.handle "
+  "WHERE o.registrar_id = ? AND s.registrar_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, netblockv4_insert,
-  "INSERT INTO netblock_v4 ("
+  "INSERT INTO netblock_v4_stage ("
     "registrar_id, "
-    "serial, "
     "org_handle, "
     "start_ip, "
     "end_ip, "
@@ -201,15 +336,13 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
     "?,"
     "?,"
     "?,"
-    "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "serial  = VALUES(serial), "
+    "prefix_len = VALUES(prefix_len), "
     "netname = VALUES(netname), "
     "descr   = VALUES(descr)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.serial       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.startAddr.v4 },
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.endAddr  .v4 },
@@ -218,31 +351,77 @@ DEFAULT_STMT(RRImport, netblockv4_insert,
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
 );
 
+DEFAULT_STMT(RRImport, netblockv4_stage_truncate,
+  "TRUNCATE TABLE netblock_v4_stage"
+);
+
+DEFAULT_STMT(RRImport, netblockv4_merge_insert,
+  "INSERT INTO netblock_v4 ("
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+  ") "
+  "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
+    "s.prefix_len, s.netname, s.descr "
+  "FROM netblock_v4_stage s "
+  "LEFT JOIN netblock_v4 nb "
+    "ON nb.registrar_id = s.registrar_id "
+    "AND nb.org_handle = s.org_handle "
+    "AND nb.start_ip = s.start_ip "
+    "AND nb.end_ip = s.end_ip "
+  "WHERE s.registrar_id = ? AND nb.id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv4_merge_update,
+  "UPDATE netblock_v4 nb "
+  "JOIN netblock_v4_stage s "
+    "ON s.registrar_id = nb.registrar_id "
+    "AND s.org_handle = nb.org_handle "
+    "AND s.start_ip = nb.start_ip "
+    "AND s.end_ip = nb.end_ip "
+  "SET "
+    "nb.serial = ?, "
+    "nb.prefix_len = s.prefix_len, "
+    "nb.netname = s.netname, "
+    "nb.descr = s.descr "
+  "WHERE nb.registrar_id = ? "
+  "AND ("
+    "nb.prefix_len != s.prefix_len OR "
+    "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+  ")",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
 DEFAULT_STMT(RRImport, netblockv4_delete_old,
-  "DELETE FROM netblock_v4 WHERE registrar_id = ? AND serial != ?",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
+  "DELETE nb FROM netblock_v4 nb "
+  "LEFT JOIN netblock_v4_stage s "
+    "ON s.registrar_id = nb.registrar_id "
+    "AND s.org_handle = nb.org_handle "
+    "AND s.start_ip = nb.start_ip "
+    "AND s.end_ip = nb.end_ip "
+  "WHERE nb.registrar_id = ? AND s.registrar_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, netblockv4_link_org,
   "UPDATE netblock_v4 nb "
+    "LEFT JOIN org_stage os "
+    "ON os.registrar_id = nb.registrar_id "
+    "AND os.handle = nb.org_handle "
     "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.handle = nb.org_handle "
-    "AND o.serial = ? "
+    "ON o.registrar_id = os.registrar_id "
+    "AND o.handle = os.handle "
     "SET nb.org_id = o.id "
     "WHERE nb.registrar_id = ? "
-    "AND nb.serial = ? "
     "AND NOT (nb.org_id <=> o.id)",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_insert,
-  "INSERT INTO netblock_v6 ("
+  "INSERT INTO netblock_v6_stage ("
     "registrar_id, "
-    "serial, "
     "org_handle, "
     "start_ip, "
     "end_ip, "
@@ -256,15 +435,13 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
     "?,"
     "?,"
     "?,"
-    "?,"
     "?"
   ") ON DUPLICATE KEY UPDATE "
-    "serial  = VALUES(serial), "
+    "prefix_len = VALUES(prefix_len), "
     "netname = VALUES(netname), "
     "descr   = VALUES(descr)",
 
   &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->in.serial       },
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.org_handle   },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.startAddr.v6, .size = sizeof(this->in.startAddr) },
   &(RRDBParam){ .type = RRDB_TYPE_BINARY, .bind = &this->in.endAddr  .v6, .size = sizeof(this->in.endAddr  ) },
@@ -273,25 +450,72 @@ DEFAULT_STMT(RRImport, netblockv6_insert,
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &this->in.descr        }
 );
 
+DEFAULT_STMT(RRImport, netblockv6_stage_truncate,
+  "TRUNCATE TABLE netblock_v6_stage"
+);
+
+DEFAULT_STMT(RRImport, netblockv6_merge_insert,
+  "INSERT INTO netblock_v6 ("
+    "registrar_id, serial, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+  ") "
+  "SELECT s.registrar_id, ?, s.org_handle, s.start_ip, s.end_ip, "
+    "s.prefix_len, s.netname, s.descr "
+  "FROM netblock_v6_stage s "
+  "LEFT JOIN netblock_v6 nb "
+    "ON nb.registrar_id = s.registrar_id "
+    "AND nb.org_handle = s.org_handle "
+    "AND nb.start_ip = s.start_ip "
+    "AND nb.end_ip = s.end_ip "
+  "WHERE s.registrar_id = ? AND nb.id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
+DEFAULT_STMT(RRImport, netblockv6_merge_update,
+  "UPDATE netblock_v6 nb "
+  "JOIN netblock_v6_stage s "
+    "ON s.registrar_id = nb.registrar_id "
+    "AND s.org_handle = nb.org_handle "
+    "AND s.start_ip = nb.start_ip "
+    "AND s.end_ip = nb.end_ip "
+  "SET "
+    "nb.serial = ?, "
+    "nb.prefix_len = s.prefix_len, "
+    "nb.netname = s.netname, "
+    "nb.descr = s.descr "
+  "WHERE nb.registrar_id = ? "
+  "AND ("
+    "nb.prefix_len != s.prefix_len OR "
+    "NOT (CAST(nb.netname AS BINARY) <=> CAST(s.netname AS BINARY)) OR "
+    "NOT (CAST(nb.descr AS BINARY) <=> CAST(s.descr AS BINARY))"
+  ")",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
+);
+
 DEFAULT_STMT(RRImport, netblockv6_delete_old,
-  "DELETE FROM netblock_v6 WHERE registrar_id = ? AND serial != ?",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
+  "DELETE nb FROM netblock_v6 nb "
+  "LEFT JOIN netblock_v6_stage s "
+    "ON s.registrar_id = nb.registrar_id "
+    "AND s.org_handle = nb.org_handle "
+    "AND s.start_ip = nb.start_ip "
+    "AND s.end_ip = nb.end_ip "
+  "WHERE nb.registrar_id = ? AND s.registrar_id IS NULL",
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, netblockv6_link_org,
   "UPDATE netblock_v6 nb "
+    "LEFT JOIN org_stage os "
+    "ON os.registrar_id = nb.registrar_id "
+    "AND os.handle = nb.org_handle "
     "LEFT JOIN org o "
-    "ON o.registrar_id = nb.registrar_id "
-    "AND o.handle = nb.org_handle "
-    "AND o.serial = ? "
+    "ON o.registrar_id = os.registrar_id "
+    "AND o.handle = os.handle "
     "SET nb.org_id = o.id "
     "WHERE nb.registrar_id = ? "
-    "AND nb.serial = ? "
     "AND NOT (nb.org_id <=> o.id)",
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_serial       }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->in_registrar_id }
 );
 
 DEFAULT_STMT(RRImport, unions_dirty_get,
@@ -446,145 +670,292 @@ static bool rr_import_registrar_update_serial(unsigned in_registrar_id, unsigned
   return rr_db_stmt_execute(s_import.registrar_update_serial.stmt, NULL);
 }
 
-bool rr_import_org_insert(RRDBOrg *in_org)
+static int rr_import_registrar_lock(
+  const char *in_name,
+  unsigned   *out_registrar_id,
+  unsigned   *out_serial,
+  unsigned   *out_last_import)
 {
-  unsigned long long ra;
-  memcpy(&s_import.org_insert.in, in_org, sizeof(*in_org));
-  if (rr_db_stmt_execute(s_import.org_insert.stmt, &ra))
-  {
-    if (ra == 1)
-      ++s_import.stats.newOrgs;
-    return true;
-  }
+  strcpy(s_import.registrar_lock.in_name, in_name);
+  int rc = rr_db_stmt_fetch_one(s_import.registrar_lock.stmt);
+  if (rc != 1)
+    return rc;
 
-  LOG_ERROR(
-    "rr_import_org_insert failed:\n"
-    "  registrar_id: %u\n"
-    "  serial      : %u\n"
-    "  handle      : %s\n"
-    "  name        : %s\n"
-    "  descr       : %s\n",
-    in_org->registrar_id,
-    in_org->serial,
-    in_org->handle,
-    in_org->name,
-    in_org->descr
-  );
-
-  return false;
+  *out_registrar_id = s_import.registrar_lock.out_registrar_id;
+  *out_serial       = s_import.registrar_lock.out_serial;
+  *out_last_import  = s_import.registrar_lock.out_last_import;
+  return 1;
 }
 
-static bool rr_import_org_delete_old(unsigned in_registrar_id, unsigned in_serial)
+static void rr_import_batches_reset(void)
+{
+  s_import.batch.org .count = 0;
+  s_import.batch.ipv4.count = 0;
+  s_import.batch.ipv6.count = 0;
+}
+
+static void rr_import_stats_rollback(void)
+{
+  s_import.stats.newOrgs     = 0;
+  s_import.stats.updatedOrgs = 0;
+  s_import.stats.deletedOrgs = 0;
+  s_import.stats.newIPv4     = 0;
+  s_import.stats.updatedIPv4 = 0;
+  s_import.stats.deletedIPv4 = 0;
+  s_import.stats.newIPv6     = 0;
+  s_import.stats.updatedIPv6 = 0;
+  s_import.stats.deletedIPv6 = 0;
+}
+
+static bool rr_import_org_batch_flush(void)
+{
+  const size_t count = s_import.batch.org.count;
+  if (count == 0)
+    return true;
+
+  if (count == RR_IMPORT_BATCH_ROWS)
+  {
+    if (!rr_db_stmt_execute(s_import.batch.org.stmt, NULL))
+    {
+      LOG_ERROR("failed to write organization stage batch (%zu rows, %s through %s)",
+        count,
+        s_import.batch.org.rows[0        ].handle,
+        s_import.batch.org.rows[count - 1].handle);
+      return false;
+    }
+  }
+  else
+    for(size_t i = 0; i < count; ++i)
+    {
+      memcpy(&s_import.org_insert.in, &s_import.batch.org.rows[i],
+        sizeof(s_import.org_insert.in));
+      if (!rr_db_stmt_execute(s_import.org_insert.stmt, NULL))
+      {
+        LOG_ERROR("failed to write organization %s to the staging table",
+          s_import.batch.org.rows[i].handle);
+        return false;
+      }
+    }
+
+  s_import.batch.org.count = 0;
+  return true;
+}
+
+static bool rr_import_netblockv4_batch_flush(void)
+{
+  const size_t count = s_import.batch.ipv4.count;
+  if (count == 0)
+    return true;
+
+  if (count == RR_IMPORT_BATCH_ROWS)
+  {
+    if (!rr_db_stmt_execute(s_import.batch.ipv4.stmt, NULL))
+    {
+      LOG_ERROR("failed to write IPv4 stage batch (%zu rows)", count);
+      return false;
+    }
+  }
+  else
+    for(size_t i = 0; i < count; ++i)
+    {
+      memcpy(&s_import.netblockv4_insert.in, &s_import.batch.ipv4.rows[i],
+        sizeof(s_import.netblockv4_insert.in));
+      if (!rr_db_stmt_execute(s_import.netblockv4_insert.stmt, NULL))
+      {
+        LOG_ERROR("failed to write IPv4 row %zu to the staging table", i);
+        return false;
+      }
+    }
+
+  s_import.batch.ipv4.count = 0;
+  return true;
+}
+
+static bool rr_import_netblockv6_batch_flush(void)
+{
+  const size_t count = s_import.batch.ipv6.count;
+  if (count == 0)
+    return true;
+
+  if (count == RR_IMPORT_BATCH_ROWS)
+  {
+    if (!rr_db_stmt_execute(s_import.batch.ipv6.stmt, NULL))
+    {
+      LOG_ERROR("failed to write IPv6 stage batch (%zu rows)", count);
+      return false;
+    }
+  }
+  else
+    for(size_t i = 0; i < count; ++i)
+    {
+      memcpy(&s_import.netblockv6_insert.in, &s_import.batch.ipv6.rows[i],
+        sizeof(s_import.netblockv6_insert.in));
+      if (!rr_db_stmt_execute(s_import.netblockv6_insert.stmt, NULL))
+      {
+        LOG_ERROR("failed to write IPv6 row %zu to the staging table", i);
+        return false;
+      }
+    }
+
+  s_import.batch.ipv6.count = 0;
+  return true;
+}
+
+static bool rr_import_batches_flush(void)
+{
+  return
+    rr_import_org_batch_flush       () &&
+    rr_import_netblockv4_batch_flush() &&
+    rr_import_netblockv6_batch_flush();
+}
+
+bool rr_import_org_insert(RRDBOrg *in_org)
+{
+  if (s_import.batch.org.count >= RR_IMPORT_BATCH_ROWS)
+  {
+    LOG_ERROR("organization staging batch overflow");
+    return false;
+  }
+
+  const size_t index = s_import.batch.org.count++;
+  memcpy(&s_import.batch.org.rows[index], in_org, sizeof(*in_org));
+  ++s_import.stats.processedOrgs;
+
+  if (s_import.batch.org.count == RR_IMPORT_BATCH_ROWS)
+    return rr_import_org_batch_flush();
+
+  return true;
+}
+
+static bool rr_import_org_stage_truncate(void)
+{
+  return rr_db_stmt_execute(s_import.org_stage_truncate.stmt, NULL);
+}
+
+static bool rr_import_org_merge_insert(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.org_merge_insert.in_registrar_id = in_registrar_id;
+  s_import.org_merge_insert.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.org_merge_insert.stmt, &s_import.stats.newOrgs);
+}
+
+static bool rr_import_org_merge_update(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.org_merge_update.in_registrar_id = in_registrar_id;
+  s_import.org_merge_update.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.org_merge_update.stmt, &s_import.stats.updatedOrgs);
+}
+
+static bool rr_import_org_delete_old(unsigned in_registrar_id)
 {
   s_import.org_delete_old.in_registrar_id = in_registrar_id;
-  s_import.org_delete_old.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.org_delete_old.stmt, &s_import.stats.deletedOrgs);
 }
 
 bool rr_import_netblockv4_insert(RRDBNetBlock *in_netblock)
 {
-  unsigned long long ra;
-  memcpy(&s_import.netblockv4_insert.in, in_netblock, sizeof(*in_netblock));
-  if (rr_db_stmt_execute(s_import.netblockv4_insert.stmt, &ra))
+  if (s_import.batch.ipv4.count >= RR_IMPORT_BATCH_ROWS)
   {
-    if (ra == 1)
-      ++s_import.stats.newIPv4;
-    return true;
+    LOG_ERROR("IPv4 staging batch overflow");
+    return false;
   }
 
-  char sAddr[32];
-  char eAddr[32];
-  uint32_t s = htonl(in_netblock->startAddr.v4);
-  uint32_t e = htonl(in_netblock->endAddr  .v4);
-  inet_ntop(AF_INET, &s, sAddr, sizeof(sAddr));
-  inet_ntop(AF_INET, &e, eAddr, sizeof(eAddr));
+  const size_t index = s_import.batch.ipv4.count++;
+  memcpy(&s_import.batch.ipv4.rows[index], in_netblock, sizeof(*in_netblock));
+  ++s_import.stats.processedIPv4;
 
-  LOG_ERROR(
-    "rr_import_netblockv4_insert insert failed:\n"
-    "  registrar_id: %u\n"
-    "  serial      : %u\n"
-    "  startAddr   : %s\n"
-    "  endAddr     : %s\n"
-    "  prefix_len  : %u\n"
-    "  netname     : %s\n"
-    "  org_handle  : %s\n"
-    "  descr       : %s\n",
-    in_netblock->registrar_id,
-    in_netblock->serial,
-    sAddr,
-    eAddr,
-    in_netblock->prefixLen,
-    in_netblock->netname,
-    in_netblock->org_handle,
-    in_netblock->descr);
+  if (s_import.batch.ipv4.count == RR_IMPORT_BATCH_ROWS)
+    return rr_import_netblockv4_batch_flush();
 
-  return false;
+  return true;
 }
 
-static bool rr_import_netblockv4_delete_old(unsigned in_registrar_id, unsigned in_serial)
+static bool rr_import_netblockv4_stage_truncate(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv4_stage_truncate.stmt, NULL);
+}
+
+static bool rr_import_netblockv4_merge_insert(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.netblockv4_merge_insert.in_registrar_id = in_registrar_id;
+  s_import.netblockv4_merge_insert.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.netblockv4_merge_insert.stmt, &s_import.stats.newIPv4);
+}
+
+static bool rr_import_netblockv4_merge_update(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.netblockv4_merge_update.in_registrar_id = in_registrar_id;
+  s_import.netblockv4_merge_update.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.netblockv4_merge_update.stmt, &s_import.stats.updatedIPv4);
+}
+
+static bool rr_import_netblockv4_delete_old(unsigned in_registrar_id)
 {
   s_import.netblockv4_delete_old.in_registrar_id = in_registrar_id;
-  s_import.netblockv4_delete_old.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv4_delete_old.stmt, &s_import.stats.deletedIPv4);
 }
 
-static bool rr_import_netblockv4_link_org(unsigned in_registrar_id, unsigned in_serial)
+static bool rr_import_netblockv4_link_org(unsigned in_registrar_id)
 {
   s_import.netblockv4_link_org.in_registrar_id = in_registrar_id;
-  s_import.netblockv4_link_org.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv4_link_org.stmt, NULL);
 }
 
 bool rr_import_netblockv6_insert(RRDBNetBlock *in_netblock)
 {
-  unsigned long long ra;
-  memcpy(&s_import.netblockv6_insert.in, in_netblock, sizeof(*in_netblock));
-  if (rr_db_stmt_execute(s_import.netblockv6_insert.stmt, &ra))
+  if (s_import.batch.ipv6.count >= RR_IMPORT_BATCH_ROWS)
   {
-    if (ra == 1)
-      ++s_import.stats.newIPv6;
-    return true;
+    LOG_ERROR("IPv6 staging batch overflow");
+    return false;
   }
 
-  char sAddr[64];
-  char eAddr[64];
-  inet_ntop(AF_INET6, &in_netblock->startAddr.v6, sAddr, sizeof(sAddr));
-  inet_ntop(AF_INET6, &in_netblock->endAddr  .v6, eAddr, sizeof(eAddr));
+  const size_t index = s_import.batch.ipv6.count++;
+  memcpy(&s_import.batch.ipv6.rows[index], in_netblock, sizeof(*in_netblock));
+  ++s_import.stats.processedIPv6;
 
-  LOG_ERROR(
-    "rr_import_netblockv6_insert insert failed:\n"
-    "  registrar_id: %u\n"
-    "  serial      : %u\n"
-    "  startAddr   : %s\n"
-    "  endAddr     : %s\n"
-    "  prefix_len  : %u\n"
-    "  netname     : %s\n"
-    "  org_handle  : %s\n"
-    "  descr       : %s\n",
-    in_netblock->registrar_id,
-    in_netblock->serial,
-    sAddr,
-    eAddr,
-    in_netblock->prefixLen,
-    in_netblock->netname,
-    in_netblock->org_handle,
-    in_netblock->descr);
+  if (s_import.batch.ipv6.count == RR_IMPORT_BATCH_ROWS)
+    return rr_import_netblockv6_batch_flush();
 
-  return false;
+  return true;
 }
 
-static bool rr_import_netblockv6_delete_old(unsigned in_registrar_id, unsigned in_serial)
+static bool rr_import_netblockv6_stage_truncate(void)
+{
+  return rr_db_stmt_execute(s_import.netblockv6_stage_truncate.stmt, NULL);
+}
+
+static bool rr_import_netblockv6_merge_insert(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.netblockv6_merge_insert.in_registrar_id = in_registrar_id;
+  s_import.netblockv6_merge_insert.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.netblockv6_merge_insert.stmt, &s_import.stats.newIPv6);
+}
+
+static bool rr_import_netblockv6_merge_update(unsigned in_registrar_id, unsigned in_serial)
+{
+  s_import.netblockv6_merge_update.in_registrar_id = in_registrar_id;
+  s_import.netblockv6_merge_update.in_serial       = in_serial;
+  return rr_db_stmt_execute(s_import.netblockv6_merge_update.stmt, &s_import.stats.updatedIPv6);
+}
+
+static bool rr_import_netblockv6_delete_old(unsigned in_registrar_id)
 {
   s_import.netblockv6_delete_old.in_registrar_id = in_registrar_id;
-  s_import.netblockv6_delete_old.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv6_delete_old.stmt, &s_import.stats.deletedIPv6);
 }
 
-static bool rr_import_netblockv6_link_org(unsigned in_registrar_id, unsigned in_serial)
+static bool rr_import_netblockv6_link_org(unsigned in_registrar_id)
 {
   s_import.netblockv6_link_org.in_registrar_id = in_registrar_id;
-  s_import.netblockv6_link_org.in_serial       = in_serial;
   return rr_db_stmt_execute(s_import.netblockv6_link_org.stmt, NULL);
+}
+
+static bool rr_import_stages_truncate(void)
+{
+  return
+    rr_import_org_stage_truncate       () &&
+    rr_import_netblockv4_stage_truncate() &&
+    rr_import_netblockv6_stage_truncate();
 }
 
 static int rr_import_unions_dirty(bool *out_dirty)
@@ -803,10 +1174,154 @@ static bool db_build_list_query_where(ConfigList *cl, RRBuffer *qb)
   return true;
 }
 
+static RRDBStmt *rr_import_prepare_org_batch(RRDBCon *con)
+{
+  RRBuffer  sql = { 0 };
+  RRDBParam params[RR_IMPORT_BATCH_ROWS * 4];
+  size_t    param = 0;
+
+  if (rr_buffer_append_str(&sql,
+    "INSERT INTO org_stage (registrar_id, handle, name, descr) VALUES ") < 0)
+    goto fail;
+
+  for(size_t i = 0; i < RR_IMPORT_BATCH_ROWS; ++i)
+  {
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?)", i == 0 ? "" : ","))
+      goto fail;
+
+    RRDBOrg *row = &s_import.batch.org.rows[i];
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &row->registrar_id };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->handle       };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->name         };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr        };
+  }
+
+  if (rr_buffer_append_str(&sql,
+    " ON DUPLICATE KEY UPDATE name = VALUES(name), descr = VALUES(descr)") < 0)
+    goto fail;
+
+  RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
+    params, ARRAY_SIZE(params), NULL, 0);
+  rr_buffer_free(&sql);
+  return stmt;
+
+fail:
+  LOG_ERROR("failed to construct the organization batch statement");
+  rr_buffer_free(&sql);
+  return NULL;
+}
+
+static RRDBStmt *rr_import_prepare_netblock_batch(RRDBCon *con, bool ipv6)
+{
+  RRBuffer  sql = { 0 };
+  RRDBParam params[RR_IMPORT_BATCH_ROWS * 7];
+  size_t    param = 0;
+
+  if (!rr_buffer_appendf(&sql,
+    "INSERT INTO netblock_%s_stage ("
+      "registrar_id, org_handle, start_ip, end_ip, prefix_len, netname, descr"
+    ") VALUES ",
+    ipv6 ? "v6" : "v4"))
+    goto fail;
+
+  for(size_t i = 0; i < RR_IMPORT_BATCH_ROWS; ++i)
+  {
+    if (!rr_buffer_appendf(&sql, "%s(?, ?, ?, ?, ?, ?, ?)", i == 0 ? "" : ","))
+      goto fail;
+
+    RRDBNetBlock *row = ipv6
+      ? &s_import.batch.ipv6.rows[i]
+      : &s_import.batch.ipv4.rows[i];
+
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &row->registrar_id };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->org_handle   };
+    if (ipv6)
+    {
+      params[param++] = (RRDBParam)
+      {
+        .type = RRDB_TYPE_BINARY,
+        .bind = &row->startAddr.v6,
+        .size = sizeof(row->startAddr.v6)
+      };
+      params[param++] = (RRDBParam)
+      {
+        .type = RRDB_TYPE_BINARY,
+        .bind = &row->endAddr.v6,
+        .size = sizeof(row->endAddr.v6)
+      };
+    }
+    else
+    {
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &row->startAddr.v4 };
+      params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &row->endAddr  .v4 };
+    }
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_UINT8 , .bind = &row->prefixLen };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->netname   };
+    params[param++] = (RRDBParam){ .type = RRDB_TYPE_STRING, .bind = &row->descr     };
+  }
+
+  if (rr_buffer_append_str(&sql,
+    " ON DUPLICATE KEY UPDATE "
+      "prefix_len = VALUES(prefix_len), "
+      "netname = VALUES(netname), "
+      "descr = VALUES(descr)") < 0)
+    goto fail;
+
+  RRDBStmt *stmt = rr_db_stmt_preparev(con, sql.buffer,
+    params, ARRAY_SIZE(params), NULL, 0);
+  rr_buffer_free(&sql);
+  return stmt;
+
+fail:
+  LOG_ERROR("failed to construct the IPv%s batch statement", ipv6 ? "6" : "4");
+  rr_buffer_free(&sql);
+  return NULL;
+}
+
+static bool rr_import_batches_prepare(RRDBCon *con)
+{
+  s_import.batch.org .stmt = rr_import_prepare_org_batch     (con);
+  s_import.batch.ipv4.stmt = rr_import_prepare_netblock_batch(con, false);
+  s_import.batch.ipv6.stmt = rr_import_prepare_netblock_batch(con, true );
+  return
+    s_import.batch.org .stmt &&
+    s_import.batch.ipv4.stmt &&
+    s_import.batch.ipv6.stmt;
+}
+
+static void rr_import_batches_free(void)
+{
+  rr_db_stmt_free(&s_import.batch.org .stmt);
+  rr_db_stmt_free(&s_import.batch.ipv4.stmt);
+  rr_db_stmt_free(&s_import.batch.ipv6.stmt);
+  rr_import_batches_reset();
+}
+
+static bool rr_import_lock_acquire(void)
+{
+  s_import.import_lock_acquire.out_acquired = 0;
+  int rc = rr_db_stmt_fetch_one(s_import.import_lock_acquire.stmt);
+  if (rc == 1 && s_import.import_lock_acquire.out_acquired != 0)
+    return true;
+
+  LOG_ERROR("another RackRadar importer owns the database import lock");
+  return false;
+}
+
+static void rr_import_lock_release(void)
+{
+  if (s_import.import_lock_release.stmt &&
+      !rr_db_stmt_execute(s_import.import_lock_release.stmt, NULL))
+    LOG_ERROR("failed to release the database import lock");
+}
+
 static bool db_init_fn(RRDBCon *con, void **udata)
 {
   *udata = &s_import;
   STMT_PREPARE(STATEMENTS, *udata);
+
+  if (!rr_import_lock_acquire() || !rr_import_batches_prepare(con))
+    return false;
 
   if (!g_config.lists)
     return true;
@@ -910,6 +1425,8 @@ static bool db_init_fn(RRDBCon *con, void **udata)
 
 static bool db_deinit_fn(RRDBCon *con, void **udata)
 {
+  rr_import_lock_release();
+  rr_import_batches_free();
   STMT_FREE(STATEMENTS, *udata);
 
   for(typeof(s_import.lists_prepare) list = s_import.lists_prepare; list && list->cl; ++list)
@@ -1591,12 +2108,6 @@ bool rr_import_run(void)
       if (src->type == SOURCE_TYPE_INVALID)
         continue;
 
-      if (!rr_db_start(con))
-      {
-        rr_db_put(&con);
-        goto fail;
-      }
-
       memset(&s_import.stats, 0, sizeof(s_import.stats));
       unsigned registrar_id = 0;
       unsigned serial       = 0;
@@ -1620,19 +2131,13 @@ bool rr_import_run(void)
         if (rc == 0)
         {
           LOG_ERROR("Failed to insert a new registrar");
-          if (!rr_db_rollback(con))
-            goto fail_con;
           continue;
         }
         LOG_INFO("New registrar inserted");
       }
 
       if (last_import > 0 && time(NULL) - last_import < src->frequency)
-      {
-        if (!rr_db_rollback(con))
-          goto fail_con;
         continue;
-      }
 
       LOG_INFO("Fetching source: %s", src->name);
       if (src->user && src->pass)
@@ -1644,17 +2149,22 @@ bool rr_import_run(void)
       if (!rr_download_to_tmpfile(s_import.dl, src->url, &fp))
       {
         LOG_ERROR("failed fetch for %s", src->name);
-        if (!rr_db_rollback(con))
-          goto fail_con;
         continue;
       }
 
       if (fseek(fp, 0, SEEK_SET) != 0)
       {
         LOG_ERROR("fseek 0 failed");
-        if (!rr_db_rollback(con))
-          goto fail_con;
+        fclose(fp);
         continue;
+      }
+
+      rr_import_batches_reset();
+      if (!rr_import_stages_truncate())
+      {
+        LOG_ERROR("failed to clear the import staging tables");
+        fclose(fp);
+        goto fail_con;
       }
 
       LOG_INFO("start import %s", src->name);
@@ -1662,17 +2172,14 @@ bool rr_import_run(void)
 
       ++serial;
       bool success = false;
-      bool linkOrgs = false;
       switch(src->type)
       {
         case SOURCE_TYPE_RPSL:
-          success  = rr_rpsl_import_gz_FILE(src->name, fp, registrar_id, serial);
-          linkOrgs = true;
+          success = rr_rpsl_import_gz_FILE(src->name, fp, registrar_id, serial);
           break;
 
         case SOURCE_TYPE_ARIN:
-          success  = rr_arin_import_zip_FILE(src->name, fp, registrar_id, serial);
-          linkOrgs = true;
+          success = rr_arin_import_zip_FILE(src->name, fp, registrar_id, serial);
           break;
 
         case SOURCE_TYPE_JSON:
@@ -1688,19 +2195,61 @@ bool rr_import_run(void)
         default:
           assert(false);
       }
+
+      if (success)
+        success = rr_import_batches_flush();
       fclose(fp);
 
       const char *resultStr;
       if (success)
       {
+        if (!rr_db_start(con))
+          goto fail_con;
+
+        unsigned locked_registrar_id;
+        unsigned locked_serial;
+        unsigned locked_last_import;
+        rc = rr_import_registrar_lock(src->name,
+          &locked_registrar_id,
+          &locked_serial,
+          &locked_last_import);
+
+        if (rc != 1)
+        {
+          LOG_ERROR("failed to lock registrar %s", src->name);
+          if (!rr_db_rollback(con))
+            goto fail_con;
+          rr_import_stats_rollback();
+          resultStr = "failed";
+          goto log_result;
+        }
+
+        if (locked_registrar_id != registrar_id ||
+            locked_serial       != serial - 1 ||
+            locked_last_import  != last_import)
+        {
+          LOG_WARN("registrar %s changed while its source was being staged", src->name);
+          if (!rr_db_rollback(con))
+            goto fail_con;
+          rr_import_stats_rollback();
+          resultStr = "superseded";
+          goto log_result;
+        }
+
         //finalize the registrar
-        LOG_INFO("finalizing");
+        LOG_INFO("merging staged import");
         if (
-          (linkOrgs && !rr_import_netblockv4_link_org(registrar_id, serial)) ||
-          (linkOrgs && !rr_import_netblockv6_link_org(registrar_id, serial)) ||
-          !rr_import_netblockv4_delete_old  (registrar_id, serial) ||
-          !rr_import_netblockv6_delete_old  (registrar_id, serial) ||
-          !rr_import_org_delete_old         (registrar_id, serial) ||
+          !rr_import_org_merge_insert       (registrar_id, serial) ||
+          !rr_import_org_merge_update       (registrar_id, serial) ||
+          !rr_import_netblockv4_merge_insert(registrar_id, serial) ||
+          !rr_import_netblockv4_merge_update(registrar_id, serial) ||
+          !rr_import_netblockv6_merge_insert(registrar_id, serial) ||
+          !rr_import_netblockv6_merge_update(registrar_id, serial) ||
+          !rr_import_netblockv4_delete_old  (registrar_id) ||
+          !rr_import_netblockv6_delete_old  (registrar_id) ||
+          !rr_import_netblockv4_link_org    (registrar_id) ||
+          !rr_import_netblockv6_link_org    (registrar_id) ||
+          !rr_import_org_delete_old         (registrar_id) ||
           !rr_import_unions_mark_dirty      () ||
           !rr_import_registrar_update_serial(registrar_id, serial) ||
           !rr_db_commit                     (con))
@@ -1708,7 +2257,9 @@ bool rr_import_run(void)
           LOG_ERROR("failed to finalize");
           if (!rr_db_rollback(con))
             goto fail_con;
-          continue;
+          rr_import_stats_rollback();
+          resultStr = "failed";
+          goto log_result;
         }
 
         resultStr = "succeeded";
@@ -1717,11 +2268,12 @@ bool rr_import_run(void)
       }
       else
       {
-        if (!rr_db_rollback(con))
-          goto fail_con;
+        rr_import_batches_reset();
         resultStr = "failed";
       }
 
+log_result:
+      ;
       uint64_t elapsed = rr_microtime() - startTime;
       uint64_t sec     = elapsed / 1000000UL;
       uint64_t us      = elapsed % 1000000UL;
@@ -1735,14 +2287,20 @@ bool rr_import_run(void)
 
       LOG_INFO("Import Statistics (%s)", src->name);
       LOG_INFO("Orgs:");
-      LOG_INFO("  New    : %llu", s_import.stats.newOrgs    );
-      LOG_INFO("  Deleted: %llu", s_import.stats.deletedOrgs);
+      LOG_INFO("  Parsed   : %llu", s_import.stats.processedOrgs);
+      LOG_INFO("  New      : %llu", s_import.stats.newOrgs      );
+      LOG_INFO("  Updated  : %llu", s_import.stats.updatedOrgs  );
+      LOG_INFO("  Deleted  : %llu", s_import.stats.deletedOrgs  );
       LOG_INFO("IPv4:");
-      LOG_INFO("  New    : %llu", s_import.stats.newIPv4    );
-      LOG_INFO("  Deleted: %llu", s_import.stats.deletedIPv4);
+      LOG_INFO("  Parsed   : %llu", s_import.stats.processedIPv4);
+      LOG_INFO("  New      : %llu", s_import.stats.newIPv4      );
+      LOG_INFO("  Updated  : %llu", s_import.stats.updatedIPv4  );
+      LOG_INFO("  Deleted  : %llu", s_import.stats.deletedIPv4  );
       LOG_INFO("IPv6:");
-      LOG_INFO("  New    : %llu", s_import.stats.newIPv6    );
-      LOG_INFO("  Deleted: %llu", s_import.stats.deletedIPv6);
+      LOG_INFO("  Parsed   : %llu", s_import.stats.processedIPv6);
+      LOG_INFO("  New      : %llu", s_import.stats.newIPv6      );
+      LOG_INFO("  Updated  : %llu", s_import.stats.updatedIPv6  );
+      LOG_INFO("  Deleted  : %llu", s_import.stats.deletedIPv6  );
     }
 
     if (rebuild_unions)

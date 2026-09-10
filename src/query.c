@@ -81,10 +81,10 @@ DEFAULT_STMT(DBQueryData, registrar_by_name,
   "SELECT id, name, serial, last_import FROM registrar WHERE name = ?",
   &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind = this->in_name },
   RRDB_PARAM_OUT,
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out.id          },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind =  this->out.name        },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out.serial      },
-  &(RRDBParam){ .type = RRDB_TYPE_UINT, .bind = &this->out.last_import }
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.id                                    },
+  &(RRDBParam){ .type = RRDB_TYPE_STRING, .bind =  this->out.name, .size = sizeof(this->out.name)    },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.serial                                },
+  &(RRDBParam){ .type = RRDB_TYPE_UINT  , .bind = &this->out.last_import                           }
 );
 
 int rr_query_registrar_by_name(
